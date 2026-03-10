@@ -7,19 +7,21 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
+BASE_URL   = "https://outlet.tsum.ru"
+API_BASE   = "https://api.tsum.ru"
+SEARCH_URL = f"{API_BASE}/v4/catalog/search"
+PRODUCT_URL = f"{API_BASE}/v4/catalog/product"
+
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/html, */*",
-    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-    "Referer": "https://outlet.tsum.ru/",
+    "Accept": "application/json",
+    "Accept-Language": "ru",
+    "Content-Type": "application/json",
     "Origin": "https://outlet.tsum.ru",
+    "Referer": "https://outlet.tsum.ru/",
+    "x-store": "outlet",
+    "x-site-region": "RU",
 }
-
-BASE_URL    = "https://outlet.tsum.ru"
-API_BASE    = "https://api.tsum.ru"
-SEARCH_API  = "https://api.tsum.ru/v4/catalog/search"
-PRODUCT_API = "https://api.tsum.ru/v4/catalog/product"
-CATALOG_API = "https://api.tsum.ru/v4/catalog/products"
 
 
 class TsumOutletParser:
@@ -47,11 +49,13 @@ class TsumOutletParser:
         if not slug:
             return None
         sess = await self._session_()
-        for endpoint in [
-            f"{PRODUCT_API}?slug={slug}",
-            f"{BASE_URL}/api/product/{slug}",
-            f"{BASE_URL}/api/catalog/v2/products/{slug}",
-        ]:
+        # Пробуем GET и POST варианты
+        endpoints_get = [
+            f"{PRODUCT_URL}?slug={slug}",
+            f"{API_BASE}/v4/product/{slug}",
+            f"{API_BASE}/v4/catalog/products/{slug}",
+        ]
+        for endpoint in endpoints_get:
             try:
                 async with sess.get(endpoint) as r:
                     if r.status == 200:
@@ -60,7 +64,18 @@ class TsumOutletParser:
                         if parsed:
                             return parsed
             except Exception as e:
-                logger.debug(f"API error {endpoint}: {e}")
+                logger.debug(f"API GET error {endpoint}: {e}")
+
+        # POST вариант
+        try:
+            async with sess.post(PRODUCT_URL, json={"slug": slug}) as r:
+                if r.status == 200:
+                    data = await r.json(content_type=None)
+                    parsed = self._norm_product(data, url)
+                    if parsed:
+                        return parsed
+        except Exception as e:
+            logger.debug(f"API POST error: {e}")
         return None
 
     async def _html_product(self, url: str) -> Optional[dict]:
@@ -191,17 +206,43 @@ class TsumOutletParser:
 
     async def _api_search(self, query: str, limit: int) -> list:
         sess = await self._session_()
-        for endpoint in [SEARCH_API, CATALOG_API, f"{BASE_URL}/api/catalog/v2/products"]:
+        # POST с JSON телом
+        bodies = [
+            {"q": query, "limit": limit, "offset": 0},
+            {"query": query, "limit": limit, "offset": 0},
+            {"text": query, "limit": limit, "offset": 0},
+            {"q": query, "pageSize": limit, "page": 0},
+        ]
+        for body in bodies:
             try:
-                params = {"q": query, "query": query, "limit": limit, "offset": 0, "isOutlet": "true", "outlet": "true"}
-                async with sess.get(endpoint, params=params) as r:
+                async with sess.post(SEARCH_URL, json=body) as r:
                     if r.status == 200:
                         data = await r.json(content_type=None)
-                        items = data.get("products") or data.get("items") or data.get("data") or (data if isinstance(data, list) else [])
+                        items = (
+                            data.get("products") or data.get("items") or
+                            data.get("data") or data.get("results") or
+                            (data if isinstance(data, list) else [])
+                        )
+                        if items:
+                            logger.info(f"Search OK with body: {body}")
+                            return self._norm_search_list(items)
+            except Exception as e:
+                logger.debug(f"Search POST error: {e}")
+
+        # GET fallback
+        for params in [
+            {"q": query, "limit": limit},
+            {"query": query, "limit": limit},
+        ]:
+            try:
+                async with sess.get(SEARCH_URL, params=params) as r:
+                    if r.status == 200:
+                        data = await r.json(content_type=None)
+                        items = data.get("products") or data.get("items") or data.get("data") or []
                         if items:
                             return self._norm_search_list(items)
             except Exception as e:
-                logger.debug(f"Search API {endpoint}: {e}")
+                logger.debug(f"Search GET error: {e}")
         return []
 
     async def _html_search(self, query: str, limit: int) -> list:
