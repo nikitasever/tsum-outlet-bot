@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 BASE_URL   = "https://outlet.tsum.ru"
 API_BASE   = "https://api.tsum.ru"
-SEARCH_URL = f"{API_BASE}/v4/catalog/search"
+SEARCH_URL = f"{API_BASE}/seo/info"
 PRODUCT_URL = f"{API_BASE}/v4/catalog/product"
 
 HEADERS = {
@@ -208,10 +208,10 @@ class TsumOutletParser:
         sess = await self._session_()
         # POST с JSON телом
         bodies = [
-            {"q": query, "limit": limit, "offset": 0},
-            {"query": query, "limit": limit, "offset": 0},
-            {"text": query, "limit": limit, "offset": 0},
-            {"q": query, "pageSize": limit, "page": 0},
+            {"q": query},
+            
+            
+            
         ]
         for body in bodies:
             try:
