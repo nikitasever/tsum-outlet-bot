@@ -26,7 +26,7 @@ HEADERS = {
 }
 
 # PythonAnywhere бесплатный тариф требует прокси для внешних запросов
-PYTHONANYWHERE_PROXY = "http://proxy.server:3128"
+
 
 BASE_URL    = "https://outlet.tsum.ru"
 SEARCH_API  = f"{BASE_URL}/api/catalog/search"
@@ -71,7 +71,7 @@ class TsumOutletParser:
             f"{BASE_URL}/api/catalog/v2/products/{slug}",
         ]:
             try:
-                async with sess.get(endpoint, proxy=self._proxy()) as r:
+                async with sess.get(endpoint) as r:
                     if r.status == 200:
                         data = await r.json(content_type=None)
                         parsed = self._norm_product(data, url)
@@ -84,7 +84,7 @@ class TsumOutletParser:
     async def _html_product(self, url: str) -> Optional[dict]:
         try:
             sess = await self._session_()
-            async with sess.get(url, proxy=self._proxy()) as r:
+            async with sess.get(url) as r:
                 if r.status != 200:
                     return None
                 html = await r.text()
@@ -214,7 +214,7 @@ class TsumOutletParser:
         for endpoint in [SEARCH_API, CATALOG_API, f"{BASE_URL}/api/catalog/v2/products"]:
             try:
                 params = {"q": query, "query": query, "limit": limit, "offset": 0}
-                async with sess.get(endpoint, params=params, proxy=self._proxy()) as r:
+                async with sess.get(endpoint, params=params) as r:
                     if r.status == 200:
                         data = await r.json(content_type=None)
                         items = data.get("products") or data.get("items") or data.get("data") or (data if isinstance(data, list) else [])
@@ -228,7 +228,7 @@ class TsumOutletParser:
         try:
             sess = await self._session_()
             url = f"{BASE_URL}/catalog/search/?q={query}"
-            async with sess.get(url, proxy=self._proxy()) as r:
+            async with sess.get(url) as r:
                 if r.status != 200:
                     return []
                 html = await r.text()
