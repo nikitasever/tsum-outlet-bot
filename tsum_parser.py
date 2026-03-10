@@ -49,7 +49,7 @@ class TsumOutletParser:
 
     def _proxy(self):
         """Прокси для PythonAnywhere. Убери если запускаешь локально."""
-        return PYTHONANYWHERE_PROXY
+        return None
 
     # ── Получить товар ────────────────────────────────────────────────────────
 
