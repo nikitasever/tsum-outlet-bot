@@ -25,9 +25,6 @@ HEADERS = {
     "Origin": "https://outlet.tsum.ru",
 }
 
-# PythonAnywhere бесплатный тариф требует прокси для внешних запросов
-
-
 BASE_URL    = "https://outlet.tsum.ru"
 SEARCH_API  = f"{BASE_URL}/api/catalog/search"
 PRODUCT_API = f"{BASE_URL}/api/catalog/product"
@@ -46,10 +43,6 @@ class TsumOutletParser:
                 connector=aiohttp.TCPConnector(ssl=False),
             )
         return self._session
-
-    def _proxy(self):
-        """Прокси для PythonAnywhere. Убери если запускаешь локально."""
-        return None
 
     # ── Получить товар ────────────────────────────────────────────────────────
 
@@ -303,6 +296,11 @@ class TsumOutletParser:
         if price and old_price and old_price > price:
             return round((1 - price / old_price) * 100)
         return None
+
+    async def close(self):
+        if self._session and not self._session.closed:
+            await self._session.close()
+
 
     async def close(self):
         if self._session and not self._session.closed:
