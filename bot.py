@@ -1,8 +1,3 @@
-"""
-Telegram-бот для анализа товаров ЦУМ Аутлет (outlet.tsum.ru)
-Запуск: python bot.py
-"""
-
 import asyncio
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -26,7 +21,17 @@ tracker = ProductTracker()
 
 OUTLET_BASE = "outlet.tsum.ru"
 
-# ─── Команды ──────────────────────────────────────────────────────────────────
+# Хранилище URL — callback_data ограничен 64 байтами
+_url_store: dict = {}
+
+def _save_url(url: str) -> str:
+    key = str(abs(hash(url)) % 10**12)
+    _url_store[key] = url
+    return key
+
+def _load_url(key: str) -> str:
+    return _url_store.get(key, key)
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
@@ -81,9 +86,10 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for i, item in enumerate(results[:8], 1):
         price_str = f"{item['price']:,}".replace(",", " ") + " ₽" if item.get("price") else "цена не указана"
         text += f"{i}. *{item['brand']}* {item['name']}\n   💰 {price_str}\n\n"
+        key = _save_url(item["url"])
         keyboard.append([InlineKeyboardButton(
             f"{i}. {item['brand']} — {item['name'][:30]}",
-            callback_data=f"analyze:{item['url']}"
+            callback_data=f"a:{key}"
         )])
     keyboard.append([InlineKeyboardButton("❌ Закрыть", callback_data="close")])
     await msg.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -130,7 +136,8 @@ async def untrack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = []
     for item in tracked:
         label = f"{item['brand']} {item['name']}"[:45]
-        keyboard.append([InlineKeyboardButton(f"🗑 {label}", callback_data=f"untrack:{item['url']}")])
+        key = _save_url(item["url"])
+        keyboard.append([InlineKeyboardButton(f"🗑 {label}", callback_data=f"u:{key}")])
     keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="close")])
     await update.message.reply_text(
         "Выбери товар для удаления:", reply_markup=InlineKeyboardMarkup(keyboard)
@@ -150,16 +157,15 @@ async def list_tracked(update: Update, context: ContextTypes.DEFAULT_TYPE):
         disc = f"  −{item['discount']}%" if item.get("discount") else ""
         avail = "🟢" if item.get("available") else "🔴"
         text += f"{i}. {avail} *{item['brand']}* {item['name']}\n   💰 {price_str}{disc}\n\n"
+        key = _save_url(item["url"])
         keyboard.append([InlineKeyboardButton(
             f"📊 {item['brand']} {item['name'][:25]}",
-            callback_data=f"analyze:{item['url']}"
+            callback_data=f"a:{key}"
         )])
     await update.message.reply_text(
         text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-
-# ─── Обработка сообщений ──────────────────────────────────────────────────────
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -185,18 +191,13 @@ async def _do_analyze(update: Update, url: str):
     await msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
 
-# ─── Форматирование ───────────────────────────────────────────────────────────
-
 def format_product(p: dict) -> str:
     lines = []
     lines.append(f"🏷 *{p.get('brand', '—')}*")
     lines.append(f"📦 {p.get('name', '—')}")
-
     if p.get("condition"):
         lines.append(f"📋 Состояние: _{p['condition']}_")
-
     lines.append("")
-
     if p.get("price"):
         price_str = f"{p['price']:,}".replace(",", " ")
         old_price = p.get("old_price")
@@ -208,18 +209,14 @@ def format_product(p: dict) -> str:
         else:
             disc_tag = f" (−{discount}% от оригинала)" if discount else ""
             lines.append(f"💰 *{price_str} ₽*{disc_tag}")
-
     if p.get("article"):
         lines.append(f"🔖 Артикул: `{p['article']}`")
-
     lines.append("")
-
     sizes = p.get("sizes", [])
     if sizes:
         lines.append("📐 *Наличие по размерам:*")
-        avail_s  = [s for s in sizes if s.get("available")]
+        avail_s   = [s for s in sizes if s.get("available")]
         unavail_s = [s for s in sizes if not s.get("available")]
-
         if avail_s:
             parts = []
             for s in avail_s:
@@ -231,37 +228,30 @@ def format_product(p: dict) -> str:
         if unavail_s:
             unavail_list = "  ".join(f"`{s['size']}`" for s in unavail_s)
             lines.append(f"🔴 Нет: {unavail_list}")
-
-        total = len(sizes)
-        avail_cnt = len(avail_s)
-        lines.append(f"\n📊 Доступно: {avail_cnt}/{total} размеров")
+        lines.append(f"\n📊 Доступно: {len(avail_s)}/{len(sizes)} размеров")
     else:
         status = "🟢 В наличии" if p.get("available") else "🔴 Нет в наличии"
         lines.append(status)
-
     if p.get("colors"):
         lines.append(f"\n🎨 Цвет: {', '.join(p['colors'])}")
-
     if p.get("url"):
         lines.append(f"\n🔗 [Открыть в аутлете]({p['url']})")
-
     return "\n".join(lines)
 
 
 def build_keyboard(url: str, user_id: int) -> InlineKeyboardMarkup:
     is_tracked = tracker.is_tracked(user_id, url)
+    key = _save_url(url)
     track_btn = (
-        InlineKeyboardButton("🔕 Убрать из отслеживания", callback_data=f"untrack:{url}")
+        InlineKeyboardButton("🔕 Убрать из отслеживания", callback_data=f"u:{key}")
         if is_tracked else
-        InlineKeyboardButton("🔔 Отслеживать", callback_data=f"track:{url}")
+        InlineKeyboardButton("🔔 Отслеживать", callback_data=f"t:{key}")
     )
     return InlineKeyboardMarkup([
         [track_btn],
-        [InlineKeyboardButton("🔄 Обновить", callback_data=f"analyze:{url}")],
+        [InlineKeyboardButton("🔄 Обновить", callback_data=f"a:{key}")],
     ])
 
-
-# ─── Callback-кнопки ──────────────────────────────────────────────────────────
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -272,8 +262,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "close":
         await query.message.delete()
 
-    elif data.startswith("analyze:"):
-        url = data[8:]
+    elif data.startswith("a:"):
+        url = _load_url(data[2:])
         await query.edit_message_text("⏳ Обновляю...")
         product = await parser.get_product(url)
         if product:
@@ -284,8 +274,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.edit_message_text("❌ Не удалось получить данные.")
 
-    elif data.startswith("track:"):
-        url = data[6:]
+    elif data.startswith("t:"):
+        url = _load_url(data[2:])
         product = await parser.get_product(url)
         if product:
             added = tracker.add(user_id, url, product)
@@ -295,8 +285,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown", reply_markup=build_keyboard(url, user_id)
             )
 
-    elif data.startswith("untrack:"):
-        url = data[8:]
+    elif data.startswith("u:"):
+        url = _load_url(data[2:])
         tracker.remove(user_id, url)
         product = await parser.get_product(url)
         if product:
@@ -307,8 +297,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.edit_message_text("✅ Товар убран из отслеживания.")
 
-
-# ─── Фоновая проверка ─────────────────────────────────────────────────────────
 
 async def check_updates(app: Application):
     logger.info("Проверяю обновления...")
@@ -339,8 +327,6 @@ async def run_scheduler(app: Application):
         await asyncio.sleep(PARSE_INTERVAL_MINUTES * 60)
         await check_updates(app)
 
-
-# ─── Запуск ───────────────────────────────────────────────────────────────────
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
