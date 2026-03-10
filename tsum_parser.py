@@ -1,9 +1,3 @@
-"""
-Парсер товаров ЦУМ Аутлет — outlet.tsum.ru
-Поддерживает: API-эндпоинты аутлета, JSON-LD, __NEXT_DATA__, HTML fallback.
-"""
-
-import asyncio
 import json
 import logging
 import re
@@ -14,11 +8,7 @@ from bs4 import BeautifulSoup
 logger = logging.getLogger(__name__)
 
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/122.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Accept": "application/json, text/html, */*",
     "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
     "Referer": "https://outlet.tsum.ru/",
@@ -43,8 +33,6 @@ class TsumOutletParser:
                 connector=aiohttp.TCPConnector(ssl=False),
             )
         return self._session
-
-    # ── Получить товар ────────────────────────────────────────────────────────
 
     async def get_product(self, url: str) -> Optional[dict]:
         url = url.strip().rstrip("/")
@@ -196,8 +184,6 @@ class TsumOutletParser:
             "condition": str(condition) if condition else None, "url": item.get("url") or url,
         }
 
-    # ── Поиск ─────────────────────────────────────────────────────────────────
-
     async def search_products(self, query: str, limit: int = 8) -> list:
         results = await self._api_search(query, limit)
         return results or await self._html_search(query, limit)
@@ -264,8 +250,6 @@ class TsumOutletParser:
             out.append({"brand": brand_name, "name": item.get("name") or item.get("title") or "—", "price": int(price) if price else None, "url": url})
         return out
 
-    # ── Утилиты ───────────────────────────────────────────────────────────────
-
     def _slug(self, url: str) -> str:
         for pat in [
             r"outlet\.tsum\.ru/product/([^/?#]+)",
@@ -296,11 +280,6 @@ class TsumOutletParser:
         if price and old_price and old_price > price:
             return round((1 - price / old_price) * 100)
         return None
-
-    async def close(self):
-        if self._session and not self._session.closed:
-            await self._session.close()
-
 
     async def close(self):
         if self._session and not self._session.closed:
