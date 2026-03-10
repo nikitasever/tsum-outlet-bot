@@ -16,9 +16,10 @@ HEADERS = {
 }
 
 BASE_URL    = "https://outlet.tsum.ru"
-SEARCH_API  = f"{BASE_URL}/api/catalog/search"
-PRODUCT_API = f"{BASE_URL}/api/catalog/product"
-CATALOG_API = f"{BASE_URL}/api/catalog/products"
+API_BASE    = "https://api.tsum.ru"
+SEARCH_API  = "https://api.tsum.ru/v4/catalog/search"
+PRODUCT_API = "https://api.tsum.ru/v4/catalog/product"
+CATALOG_API = "https://api.tsum.ru/v4/catalog/products"
 
 
 class TsumOutletParser:
@@ -192,7 +193,7 @@ class TsumOutletParser:
         sess = await self._session_()
         for endpoint in [SEARCH_API, CATALOG_API, f"{BASE_URL}/api/catalog/v2/products"]:
             try:
-                params = {"q": query, "query": query, "limit": limit, "offset": 0}
+                params = {"q": query, "query": query, "limit": limit, "offset": 0, "isOutlet": "true", "outlet": "true"}
                 async with sess.get(endpoint, params=params) as r:
                     if r.status == 200:
                         data = await r.json(content_type=None)
