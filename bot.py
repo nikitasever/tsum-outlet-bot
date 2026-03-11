@@ -325,7 +325,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown", reply_markup=build_keyboard(url, user_id)
             )
 
-  elif data.startswith("page:"):
+   elif data.startswith("page:"):
         _, search_key, page_str = data.split(":")
         page = int(page_str)
         stored = _search_store.get(search_key)
