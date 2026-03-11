@@ -328,8 +328,18 @@ async def run_scheduler(app: Application):
         await check_updates(app)
 
 
+async def post_init(app):
+    await app.bot.set_my_commands([
+        ("start",   "🏠 Главное меню"),
+        ("search",  "🔍 Поиск товара"),
+        ("list",    "📋 Мои отслеживания"),
+        ("track",   "🔔 Добавить отслеживание"),
+        ("untrack", "🔕 Убрать отслеживание"),
+        ("help",    "📖 Справка"),
+    ])
+
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start",   start))
     app.add_handler(CommandHandler("help",    help_command))
     app.add_handler(CommandHandler("search",  search))
