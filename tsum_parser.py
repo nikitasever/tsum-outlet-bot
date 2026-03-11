@@ -281,34 +281,34 @@ class TsumOutletParser:
             logger.error(f"Search error: {e}")
             return []
 
-    def _norm_models_list(self, items: list) -> list:
-    out = []
-    for item in items:
-        brand = item.get("brand") or {}
-        brand_name = brand.get("title") or brand.get("name") if isinstance(brand, dict) else str(brand or "—")
-        offers = item.get("offers") or []
-        price, old_price, available, coming_soon = None, None, False, False
-        if offers:
-            p = offers[0].get("price") or {}
-            price     = p.get("priceWithDiscount") or p.get("currentPrice")
-            old_price = p.get("originalPrice") or p.get("oldPrice")
-            qty = offers[0].get("quantity")
-            available = qty is None or int(qty) > 0
-            coming_soon = item.get("comingSoon") or item.get("isComingSoon") or offers[0].get("comingSoon") or False
-        slug = item.get("slug") or str(item.get("id", ""))
-        images = item.get("images") or []
-        image_url = images[0].get("small") if images else None
-        out.append({
-            "brand":       brand_name or "—",
-            "name":        item.get("title") or item.get("name") or "—",
-            "price":       int(price) if price else None,
-            "old_price":   int(old_price) if old_price else None,
-            "image_url":   image_url,
-            "url":         f"https://outlet.tsum.ru/product/{slug}",
-            "available":   available,
-            "coming_soon": bool(coming_soon),
-        })
-    return out
+   def _norm_models_list(self, items: list) -> list:
+        out = []
+        for item in items:
+            brand = item.get("brand") or {}
+            brand_name = brand.get("title") or brand.get("name") if isinstance(brand, dict) else str(brand or "—")
+            offers = item.get("offers") or []
+            price, old_price, available, coming_soon = None, None, False, False
+            if offers:
+                p = offers[0].get("price") or {}
+                price     = p.get("priceWithDiscount") or p.get("currentPrice")
+                old_price = p.get("originalPrice") or p.get("oldPrice")
+                qty = offers[0].get("quantity")
+                available = qty is None or int(qty) > 0
+                coming_soon = item.get("comingSoon") or item.get("isComingSoon") or offers[0].get("comingSoon") or False
+            slug = item.get("slug") or str(item.get("id", ""))
+            images = item.get("images") or []
+            image_url = images[0].get("small") if images else None
+            out.append({
+                "brand":       brand_name or "—",
+                "name":        item.get("title") or item.get("name") or "—",
+                "price":       int(price) if price else None,
+                "old_price":   int(old_price) if old_price else None,
+                "image_url":   image_url,
+                "url":         f"https://outlet.tsum.ru/product/{slug}",
+                "available":   available,
+                "coming_soon": bool(coming_soon),
+            })
+        return out
 
     def _slug(self, url: str) -> str:
         for pat in [
