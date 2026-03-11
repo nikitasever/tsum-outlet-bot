@@ -21,7 +21,6 @@ tracker = ProductTracker()
 
 OUTLET_BASE = "outlet.tsum.ru"
 
-# Хранилище URL — callback_data ограничен 64 байтами
 _url_store: dict = {}
 
 def _save_url(url: str) -> str:
@@ -81,18 +80,42 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text("😕 Ничего не найдено. Попробуй другой запрос.")
         return
 
-    text = f"🛍 *Результаты по «{query}»:*\n\n"
-    keyboard = []
-    for i, item in enumerate(results[:8], 1):
+    await msg.delete()
+    for item in results[:8]:
         price_str = f"{item['price']:,}".replace(",", " ") + " ₽" if item.get("price") else "цена не указана"
-        text += f"{i}. *{item['brand']}* {item['name']}\n   💰 {price_str}\n\n"
+        old_price_str = ""
+        if item.get("old_price") and item.get("price") and item["old_price"] > item["price"]:
+            old_str = f"{item['old_price']:,}".replace(",", " ")
+            discount = round((1 - item["price"] / item["old_price"]) * 100)
+            old_price_str = f"\n~~{old_str} ₽~~ (−{discount}%)"
+        caption = (
+            f"🏷 *{item['brand']}*\n"
+            f"📦 {item['name']}\n"
+            f"💰 *{price_str}*{old_price_str}\n"
+            f"🔗 [Открыть]({item['url']})"
+        )
         key = _save_url(item["url"])
-        keyboard.append([InlineKeyboardButton(
-            f"{i}. {item['brand']} — {item['name'][:30]}",
-            callback_data=f"a:{key}"
-        )])
-    keyboard.append([InlineKeyboardButton("❌ Закрыть", callback_data="close")])
-    await msg.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("📊 Подробнее", callback_data=f"a:{key}"),
+            InlineKeyboardButton("🔔 Отслеживать", callback_data=f"t:{key}"),
+        ]])
+        try:
+            if item.get("image_url"):
+                await update.message.reply_photo(
+                    photo=item["image_url"],
+                    caption=caption,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard
+                )
+            else:
+                await update.message.reply_text(
+                    caption, parse_mode="Markdown", reply_markup=keyboard
+                )
+        except Exception as e:
+            logger.error(f"Photo send error: {e}")
+            await update.message.reply_text(
+                caption, parse_mode="Markdown", reply_markup=keyboard
+            )
 
 
 async def track(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -337,6 +360,7 @@ async def post_init(app):
         ("untrack", "🔕 Убрать отслеживание"),
         ("help",    "📖 Справка"),
     ])
+
 
 def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
