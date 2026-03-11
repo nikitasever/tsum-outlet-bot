@@ -208,34 +208,40 @@ class TsumOutletParser:
     async def _api_search(self, query: str, limit: int) -> list:
         sess = await self._session_()
         try:
-            async with sess.get(
-                f"{API_BASE}/catalog/search/suggestion",
-                params={"q": query, "limit": limit}
+            async with sess.post(
+                f"{API_BASE}/v4/catalog/search",
+                json={"q": query}
             ) as r:
                 if r.status == 200:
                     data = await r.json(content_type=None)
-                    items = data.get("products") or []
+                    items = data.get("models") or []
                     if items:
-                        return self._norm_suggestion_list(items[:limit])
+                        return self._norm_models_list(items[:limit])
         except Exception as e:
             logger.error(f"Search error: {e}")
         return []
 
-    def _norm_suggestion_list(self, items: list) -> list:
+    def _norm_models_list(self, items: list) -> list:
         out = []
         for item in items:
             brand = item.get("brand") or {}
             brand_name = brand.get("title") or brand.get("name") if isinstance(brand, dict) else str(brand or "—")
-            price = item.get("price") or item.get("priceWithDiscount")
-            old_price = item.get("originalPrice") or item.get("oldPrice")
+            offers = item.get("offers") or []
+            price, old_price = None, None
+            if offers:
+                p = offers[0].get("price") or {}
+                price     = p.get("priceWithDiscount") or p.get("currentPrice")
+                old_price = p.get("originalPrice") or p.get("oldPrice")
             slug = item.get("slug") or str(item.get("id", ""))
+            images = item.get("images") or []
+            image_url = images[0].get("small") if images else None
             out.append({
-                "brand": brand_name or "—",
-                "name": item.get("title") or item.get("name") or "—",
-                "price": int(price) if price else None,
+                "brand":     brand_name or "—",
+                "name":      item.get("title") or item.get("name") or "—",
+                "price":     int(price) if price else None,
                 "old_price": int(old_price) if old_price else None,
-                "image_url": item.get("imageUrl"),
-                "url": f"https://outlet.tsum.ru/product/{slug}",
+                "image_url": image_url,
+                "url":       f"https://outlet.tsum.ru/product/{slug}",
             })
         return out
 
