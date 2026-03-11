@@ -26,6 +26,8 @@ _url_store: dict = {}
 def _save_url(url: str) -> str:
     key = str(abs(hash(url)) % 10**12)
     _url_store[key] = url
+    # Хранилище результатов поиска для пагинации
+_search_store: dict = {}
     return key
 
 def _load_url(key: str) -> str:
@@ -75,29 +77,39 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     msg = await update.message.reply_text(f"🔍 Ищу «{query}» в аутлете...")
-    results = await parser.search_products(query)
+    results = await parser.search_products(query, limit=40)
     if not results:
         await msg.edit_text("😕 Ничего не найдено. Попробуй другой запрос.")
         return
 
+    user_id = update.effective_user.id
+    search_key = str(abs(hash(query + str(user_id))) % 10**10)
+    _search_store[search_key] = {"results": results, "query": query}
+
     await msg.delete()
+    await send_search_page(update.message, results, query, search_key, page=0)
+
+
+async def send_search_page(message, results, query, search_key, page=0):
+    from telegram import InputMediaPhoto
+    page_size = 8
+    start = page * page_size
+    end = start + page_size
+    page_items = results[start:end]
+    total_pages = (len(results) - 1) // page_size + 1
 
     # Альбом с фото
-    from telegram import InputMediaPhoto
-    media = []
-    for item in results[:8]:
-        if item.get("image_url"):
-            media.append(InputMediaPhoto(media=item["image_url"]))
+    media = [InputMediaPhoto(media=item["image_url"]) for item in page_items if item.get("image_url")]
     if media:
         try:
-            await update.message.reply_media_group(media=media)
+            await message.reply_media_group(media=media)
         except Exception as e:
             logger.error(f"Media group error: {e}")
 
-    # Текстовый список с кнопками
-    text = f"🛍 *Результаты по «{query}»:*\n\n"
+    # Текст со списком
+    text = f"🛍 *«{query}»* — стр. {page+1}/{total_pages} ({len(results)} товаров)\n\n"
     keyboard = []
-    for i, item in enumerate(results[:8], 1):
+    for i, item in enumerate(page_items, start + 1):
         price_str = f"{item['price']:,}".replace(",", " ") + " ₽" if item.get("price") else "цена не указана"
         old_price_str = ""
         if item.get("old_price") and item.get("price") and item["old_price"] > item["price"]:
@@ -109,8 +121,18 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{i}. {item['brand']} — {item['name'][:28]}",
             callback_data=f"a:{key}"
         )])
+
+    # Кнопки пагинации
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️ Назад", callback_data=f"page:{search_key}:{page-1}"))
+    if end < len(results):
+        nav.append(InlineKeyboardButton("Вперёд ▶️", callback_data=f"page:{search_key}:{page+1}"))
+    if nav:
+        keyboard.append(nav)
     keyboard.append([InlineKeyboardButton("❌ Закрыть", callback_data="close")])
-    await update.message.reply_text(
+
+    await message.reply_text(
         text, parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
@@ -304,17 +326,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown", reply_markup=build_keyboard(url, user_id)
             )
 
-    elif data.startswith("u:"):
-        url = _load_url(data[2:])
-        tracker.remove(user_id, url)
-        product = await parser.get_product(url)
-        if product:
-            await query.edit_message_text(
-                f"🔕 Убрано из отслеживания.\n\n{format_product(product)}",
-                parse_mode="Markdown", reply_markup=build_keyboard(url, user_id)
+  elif data.startswith("page:"):
+        _, search_key, page_str = data.split(":")
+        page = int(page_str)
+        stored = _search_store.get(search_key)
+        if stored:
+            await query.message.delete()
+            await send_search_page(
+                query.message, stored["results"],
+                stored["query"], search_key, page
             )
         else:
-            await query.edit_message_text("✅ Товар убран из отслеживания.")
+            await query.answer("Поиск устарел, выполни заново", show_alert=True)
 
 
 async def check_updates(app: Application):
