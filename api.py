@@ -79,19 +79,29 @@ def save_catalog(data):
 @app.post("/api/catalog/save")
 async def catalog_save(products: list[dict]):
     catalog = load_catalog()
+    sold = load_sold()
     now = int(time.time())
     for p in products:
         url = p.get("url")
         if not url:
             continue
+        prev = catalog.get(url)
+        # Детект продажи: был available, стал нет
+        if prev and prev["product"].get("available") and not p.get("available"):
+            sold.append({
+                "product": p,
+                "ts": now,
+                "prev_price": prev["product"].get("price")
+            })
         if url not in catalog:
             catalog[url] = {"product": p, "history": []}
         catalog[url]["product"] = p
         history = catalog[url]["history"]
         if not history or history[-1]["price"] != p.get("price"):
             history.append({"price": p.get("price"), "ts": now})
-        catalog[url]["history"] = history[-30:]  # храним 30 точек
+        catalog[url]["history"] = history[-30:]
     save_catalog(catalog)
+    save_sold(sold[-1000:])
     return {"saved": len(products)}
 
 @app.get("/api/stats")
@@ -114,3 +124,27 @@ async def stats():
         "top_discount": [i["product"] for i in top_discount],
         "price_drops": [i["product"] for i in price_drops[:20]],
     }
+SOLD_FILE = "sold_store.json"
+
+def load_sold():
+    if os.path.exists(SOLD_FILE):
+        with open(SOLD_FILE) as f:
+            return json.load(f)
+    return []
+
+def save_sold(data):
+    with open(SOLD_FILE, "w") as f:
+        json.dump(data, f, ensure_ascii=False)
+
+@app.get("/api/sold")
+async def sold_today():
+    sold = load_sold()
+    today = int(time.time()) - 86400
+    recent = [s for s in sold if s.get("ts", 0) > today]
+    return {"count": len(recent), "items": recent}
+
+@app.get("/api/coming_soon")
+async def coming_soon():
+    catalog = load_catalog()
+    items = [v["product"] for v in catalog.values() if v["product"].get("coming_soon")]
+    return {"count": len(items), "items": items}
