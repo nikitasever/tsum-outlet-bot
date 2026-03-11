@@ -246,27 +246,6 @@ class TsumOutletParser:
             })
         return out
 
-    def _norm_models_list(self, items: list) -> list:
-        out = []
-        for item in items:
-            brand = item.get("brand") or {}
-            brand_name = brand.get("title") or brand.get("name") if isinstance(brand, dict) else str(brand or "—")
-            offers = item.get("offers") or []
-            price, old_price = None, None
-            if offers:
-                p = offers[0].get("price") or {}
-                price = p.get("priceWithDiscount") or p.get("currentPrice")
-                old_price = p.get("originalPrice") or p.get("oldPrice")
-            slug = item.get("slug") or str(item.get("id", ""))
-            out.append({
-                "brand": brand_name or "—",
-                "name": item.get("title") or item.get("name") or "—",
-                "price": int(price) if price else None,
-                "old_price": int(old_price) if old_price else None,
-                "url": f"https://outlet.tsum.ru/product/{slug}"
-            })
-        return out
-
     async def _html_search(self, query: str, limit: int) -> list:
         try:
             sess = await self._session_()
