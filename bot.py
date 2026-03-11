@@ -52,7 +52,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("🛍 Открыть каталог", web_app=WebAppInfo(url="https://nikitasever.github.io/tsum-outlet-miniapp"))
     ]])
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
-    )
+    
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
