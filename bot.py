@@ -81,32 +81,39 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await msg.delete()
+
+    # Альбом с фото
+    from telegram import InputMediaPhoto
+    media = []
     for item in results[:8]:
+        if item.get("image_url"):
+            media.append(InputMediaPhoto(media=item["image_url"]))
+    if media:
+        try:
+            await update.message.reply_media_group(media=media)
+        except Exception as e:
+            logger.error(f"Media group error: {e}")
+
+    # Текстовый список с кнопками
+    text = f"🛍 *Результаты по «{query}»:*\n\n"
+    keyboard = []
+    for i, item in enumerate(results[:8], 1):
         price_str = f"{item['price']:,}".replace(",", " ") + " ₽" if item.get("price") else "цена не указана"
         old_price_str = ""
         if item.get("old_price") and item.get("price") and item["old_price"] > item["price"]:
-            old_str = f"{item['old_price']:,}".replace(",", " ")
             discount = round((1 - item["price"] / item["old_price"]) * 100)
-            old_price_str = f"\n~~{old_str} ₽~~ (−{discount}%)"
-        caption = (
-            f"🏷 *{item['brand']}*\n"
-            f"📦 {item['name']}\n"
-            f"💰 *{price_str}*{old_price_str}\n"
-            f"🔗 [Открыть]({item['url']})"
-        )
+            old_price_str = f" (−{discount}%)"
+        text += f"{i}. *{item['brand']}* {item['name']}\n   💰 {price_str}{old_price_str}\n\n"
         key = _save_url(item["url"])
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("📊 Подробнее", callback_data=f"a:{key}"),
-            InlineKeyboardButton("🔔 Отслеживать", callback_data=f"t:{key}"),
-        ]])
-        try:
-            if item.get("image_url"):
-                await update.message.reply_photo(
-                    photo=item["image_url"],
-                    caption=caption,
-                    parse_mode="Markdown",
-                    reply_markup=keyboard
-                )
+        keyboard.append([InlineKeyboardButton(
+            f"{i}. {item['brand']} — {item['name'][:28]}",
+            callback_data=f"a:{key}"
+        )])
+    keyboard.append([InlineKeyboardButton("❌ Закрыть", callback_data="close")])
+    await update.message.reply_text(
+        text, parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
             else:
                 await update.message.reply_text(
                     caption, parse_mode="Markdown", reply_markup=keyboard
