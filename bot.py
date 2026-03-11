@@ -22,14 +22,13 @@ tracker = ProductTracker()
 OUTLET_BASE = "outlet.tsum.ru"
 
 _url_store: dict = {}
+_search_store: dict = {}
 
 def _save_url(url: str) -> str:
     key = str(abs(hash(url)) % 10**12)
     _url_store[key] = url
-    # Хранилище результатов поиска для пагинации
-_search_store: dict = {}
     return key
-)
+
 def _load_url(key: str) -> str:
     return _url_store.get(key, key)
 
