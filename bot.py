@@ -113,18 +113,7 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         text, parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-            else:
-                await update.message.reply_text(
-                    caption, parse_mode="Markdown", reply_markup=keyboard
-                )
-        except Exception as e:
-            logger.error(f"Photo send error: {e}")
-            await update.message.reply_text(
-                caption, parse_mode="Markdown", reply_markup=keyboard
-            )
-
-
+   
 async def track(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
