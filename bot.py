@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     CallbackQueryHandler, ContextTypes, filters
@@ -83,14 +83,13 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = update.effective_user.id
     search_key = str(abs(hash(query + str(user_id))) % 10**10)
-    _search_store[search_key] = {"results": results, "query": query}
+    _search_store[search_key] = {"results": results, "query": query, "photo_ids": []}
 
     await msg.delete()
     await send_search_page(update.message, results, query, search_key, page=0)
 
 
 async def send_search_page(message, results, query, search_key, page=0):
-    from telegram import InputMediaPhoto
     page_size = 8
     start = page * page_size
     end = start + page_size
@@ -99,11 +98,16 @@ async def send_search_page(message, results, query, search_key, page=0):
 
     # Альбом с фото
     media = [InputMediaPhoto(media=item["image_url"]) for item in page_items if item.get("image_url")]
+    photo_ids = []
     if media:
         try:
-            await message.reply_media_group(media=media)
+            sent = await message.reply_media_group(media=media)
+            photo_ids = [m.message_id for m in sent]
         except Exception as e:
             logger.error(f"Media group error: {e}")
+
+    if search_key in _search_store:
+        _search_store[search_key]["photo_ids"] = photo_ids
 
     # Текст со списком
     text = f"🛍 *«{query}»* — стр. {page+1}/{total_pages} ({len(results)} товаров)\n\n"
@@ -121,7 +125,6 @@ async def send_search_page(message, results, query, search_key, page=0):
             callback_data=f"a:{key}"
         )])
 
-    # Кнопки пагинации
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("◀️ Назад", callback_data=f"page:{search_key}:{page-1}"))
@@ -129,12 +132,25 @@ async def send_search_page(message, results, query, search_key, page=0):
         nav.append(InlineKeyboardButton("Вперёд ▶️", callback_data=f"page:{search_key}:{page+1}"))
     if nav:
         keyboard.append(nav)
-    keyboard.append([InlineKeyboardButton("❌ Закрыть", callback_data="close")])
+    keyboard.append([InlineKeyboardButton("❌ Закрыть", callback_data=f"sclose:{search_key}")])
 
     await message.reply_text(
         text, parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
+
+async def delete_search_photos(bot, chat_id: int, search_key: str):
+    stored = _search_store.get(search_key, {})
+    for photo_id in stored.get("photo_ids", []):
+        try:
+            await bot.delete_message(chat_id, photo_id)
+        except Exception:
+            pass
+    if search_key in _search_store:
+        _search_store[search_key]["photo_ids"] = []
+
+
 async def track(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
@@ -298,9 +314,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data    = query.data
     user_id = query.from_user.id
+    chat_id = query.message.chat_id
 
     if data == "close":
         await query.message.delete()
+
+    elif data.startswith("sclose:"):
+        search_key = data[7:]
+        await delete_search_photos(query.get_bot(), chat_id, search_key)
+        await query.message.delete()
+        _search_store.pop(search_key, None)
 
     elif data.startswith("a:"):
         url = _load_url(data[2:])
@@ -325,11 +348,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown", reply_markup=build_keyboard(url, user_id)
             )
 
+    elif data.startswith("u:"):
+        url = _load_url(data[2:])
+        tracker.remove(user_id, url)
+        product = await parser.get_product(url)
+        if product:
+            await query.edit_message_text(
+                f"🔕 Убрано из отслеживания.\n\n{format_product(product)}",
+                parse_mode="Markdown", reply_markup=build_keyboard(url, user_id)
+            )
+        else:
+            await query.edit_message_text("✅ Товар убран из отслеживания.")
+
     elif data.startswith("page:"):
         _, search_key, page_str = data.split(":")
         page = int(page_str)
         stored = _search_store.get(search_key)
         if stored:
+            await delete_search_photos(query.get_bot(), chat_id, search_key)
             await query.message.delete()
             await send_search_page(
                 query.message, stored["results"],
@@ -397,6 +433,9 @@ def main():
     logger.info("🤖 ЦУМ Аутлет бот запущен")
     app.run_polling(drop_pending_updates=True)
 
+
+if __name__ == "__main__":
+    main()
 
 if __name__ == "__main__":
     main()
