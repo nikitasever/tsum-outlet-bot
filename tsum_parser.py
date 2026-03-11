@@ -235,6 +235,7 @@ class TsumOutletParser:
             slug = item.get("slug") or str(item.get("id", ""))
             images = item.get("images") or []
             image_url = images[0].get("small") if images else None
+            logger.error(f"images: {images[:1]}, image_url: {image_url}")
             out.append({
                 "brand":     brand_name or "—",
                 "name":      item.get("title") or item.get("name") or "—",
