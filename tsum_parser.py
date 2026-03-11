@@ -204,17 +204,19 @@ class TsumOutletParser:
         results = await self._api_search(query, limit)
         return results or await self._html_search(query, limit)
 
-    async def _api_search(self, query: str, limit: int) -> list:
+   async def _api_search(self, query: str, limit: int) -> list:
         sess = await self._session_()
         try:
             async with sess.post(SEARCH_URL, json={"q": query}) as r:
-                if r.status == 200:
-                    data = await r.json(content_type=None)
-                    items = data.get("models") or data.get("products") or data.get("items") or []
-                    if items:
-                        return self._norm_models_list(items[:limit])
+                logger.error(f"Search status: {r.status}, url: {r.url}")
+                data = await r.json(content_type=None)
+                logger.error(f"Search response keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+                logger.error(f"Search response: {str(data)[:500]}")
+                items = data.get("models") or data.get("products") or data.get("items") or []
+                if items:
+                    return self._norm_models_list(items[:limit])
         except Exception as e:
-            logger.debug(f"Search error: {e}")
+            logger.error(f"Search error: {e}")
         return []
 
     def _norm_models_list(self, items: list) -> list:
