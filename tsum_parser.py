@@ -281,7 +281,7 @@ class TsumOutletParser:
             logger.error(f"Search error: {e}")
             return []
 
-   def _norm_models_list(self, items: list) -> list:
+    def _norm_models_list(self, items: list) -> list:
     out = []
     for item in items:
         brand = item.get("brand") or {}
