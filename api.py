@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -58,17 +57,8 @@ async def untrack(user_id: int, url: str):
 async def categories():
     return {"categories": [
         {"id": 18644, "title": "Ремни", "slug": "remni-18644"},
-        {"id": 18868, "title": "Ремни (мужское)", "slug": "remni-18868"},
-        {"id": 19537, "title": "Ремни (мужское)", "slug": "remni-19537"},
         {"id": 18413, "title": "Одежда", "slug": "odezhda"},
         {"id": 18000, "title": "Обувь", "slug": "obuv"},
         {"id": 18100, "title": "Сумки", "slug": "sumki"},
         {"id": 18200, "title": "Аксессуары", "slug": "aksessuary"},
     ]}
-]}
-
-Теперь измени `Procfile` чтобы запускались оба сервиса:
-]}
-web: uvicorn api:app --host 0.0.0.0 --port $PORT
-
-worker: python bot.py
