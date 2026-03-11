@@ -65,9 +65,10 @@ async def categories():
         {"id": 18100, "title": "Сумки", "slug": "sumki"},
         {"id": 18200, "title": "Аксессуары", "slug": "aksessuary"},
     ]}
-```
+]}
 
 Теперь измени `Procfile` чтобы запускались оба сервиса:
-```
+]}
 web: uvicorn api:app --host 0.0.0.0 --port $PORT
+
 worker: python bot.py
