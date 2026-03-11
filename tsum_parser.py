@@ -282,7 +282,7 @@ class TsumOutletParser:
             return []
 
    def _norm_models_list(self, items: list) -> list:
-        out = []
+       out = []
         for item in items:
             brand = item.get("brand") or {}
             brand_name = brand.get("title") or brand.get("name") if isinstance(brand, dict) else str(brand or "—")
