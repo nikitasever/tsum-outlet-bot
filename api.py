@@ -62,3 +62,55 @@ async def categories():
         {"id": 18100, "title": "Сумки", "slug": "sumki"},
         {"id": 18200, "title": "Аксессуары", "slug": "aksessuary"},
     ]}
+import json, os, time
+
+CATALOG_FILE = "catalog_store.json"
+
+def load_catalog():
+    if os.path.exists(CATALOG_FILE):
+        with open(CATALOG_FILE) as f:
+            return json.load(f)
+    return {}
+
+def save_catalog(data):
+    with open(CATALOG_FILE, "w") as f:
+        json.dump(data, f, ensure_ascii=False)
+
+@app.post("/api/catalog/save")
+async def catalog_save(products: list[dict]):
+    catalog = load_catalog()
+    now = int(time.time())
+    for p in products:
+        url = p.get("url")
+        if not url:
+            continue
+        if url not in catalog:
+            catalog[url] = {"product": p, "history": []}
+        catalog[url]["product"] = p
+        history = catalog[url]["history"]
+        if not history or history[-1]["price"] != p.get("price"):
+            history.append({"price": p.get("price"), "ts": now})
+        catalog[url]["history"] = history[-30:]  # храним 30 точек
+    save_catalog(catalog)
+    return {"saved": len(products)}
+
+@app.get("/api/stats")
+async def stats():
+    catalog = load_catalog()
+    items = list(catalog.values())
+    # топ скидок
+    top_discount = sorted(
+        items,
+        key=lambda x: x["product"].get("old_price", 0) - x["product"].get("price", 0),
+        reverse=True
+    )[:20]
+    # недавние снижения цен
+    price_drops = [
+        i for i in items
+        if len(i["history"]) >= 2 and i["history"][-1]["price"] < i["history"][-2]["price"]
+    ]
+    return {
+        "total": len(items),
+        "top_discount": [i["product"] for i in top_discount],
+        "price_drops": [i["product"] for i in price_drops[:20]],
+    }
