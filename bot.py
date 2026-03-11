@@ -29,7 +29,7 @@ def _save_url(url: str) -> str:
     # Хранилище результатов поиска для пагинации
 _search_store: dict = {}
     return key
-
+)
 def _load_url(key: str) -> str:
     return _url_store.get(key, key)
 
