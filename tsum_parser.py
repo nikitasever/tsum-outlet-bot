@@ -9,8 +9,8 @@ logger = logging.getLogger(__name__)
 
 BASE_URL   = "https://outlet.tsum.ru"
 API_BASE   = "https://api.tsum.ru"
-SEARCH_URL     = f"{API_BASE}/catalog/filter"
-SUGGEST_URL    = f"{API_BASE}/catalog/search/suggestion"
+SEARCH_URL  = f"{API_BASE}/catalog/filter"
+SUGGEST_URL  = f"{API_BASE}/catalog/search/suggestion"
 PRODUCT_URL = f"{API_BASE}/v4/catalog/product"
 
 HEADERS = {
@@ -208,20 +208,35 @@ class TsumOutletParser:
     async def _api_search(self, query: str, limit: int) -> list:
         sess = await self._session_()
         try:
-            async with sess.get(SEARCH_URL, params={"q": query, "x-store": "outlet"}) as r:
-                logger.error(f"Search status: {r.status}")
-                data = await r.json(content_type=None)
-                logger.error(f"Search response: {str(data)[:1000]}")
-                items = (
-                    data.get("models") or data.get("products") or
-                    data.get("items") or data.get("data") or
-                    (data if isinstance(data, list) else [])
-                )
-                if items:
-                    return self._norm_models_list(items[:limit])
+            async with sess.get(
+                f"{API_BASE}/catalog/search/suggestion",
+                params={"q": query, "limit": limit}
+            ) as r:
+                if r.status == 200:
+                    data = await r.json(content_type=None)
+                    items = data.get("products") or []
+                    if items:
+                        return self._norm_suggestion_list(items[:limit])
         except Exception as e:
             logger.error(f"Search error: {e}")
         return []
+
+    def _norm_suggestion_list(self, items: list) -> list:
+        out = []
+        for item in items:
+            brand = item.get("brand") or {}
+            brand_name = brand.get("title") or brand.get("name") if isinstance(brand, dict) else str(brand or "—")
+            price = item.get("price") or item.get("priceWithDiscount")
+            old_price = item.get("originalPrice") or item.get("oldPrice")
+            slug = item.get("slug") or str(item.get("id", ""))
+            out.append({
+                "brand": brand_name or "—",
+                "name": item.get("title") or item.get("name") or "—",
+                "price": int(price) if price else None,
+                "old_price": int(old_price) if old_price else None,
+                "url": f"https://outlet.tsum.ru/product/{slug}",
+            })
+        return out
 
     def _norm_models_list(self, items: list) -> list:
         out = []
