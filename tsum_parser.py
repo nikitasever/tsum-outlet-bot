@@ -204,7 +204,7 @@ class TsumOutletParser:
         results = await self._api_search(query, limit)
         return results or await self._html_search(query, limit)
 
-   async def _api_search(self, query: str, limit: int) -> list:
+    async def _api_search(self, query: str, limit: int) -> list:
         sess = await self._session_()
         try:
             async with sess.post(SEARCH_URL, json={"q": query}) as r:
