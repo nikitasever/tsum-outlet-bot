@@ -270,7 +270,7 @@ class TsumOutletParser:
                     results.append({"brand": brand or "—", "name": name, "price": price, "url": href})
             return results
         except Exception as e:
-            logger.error(f"HTML search error: {e}")
+            logger.error(f"Search error: {e}")
             return []
 
     def _norm_search_list(self, items: list) -> list:
