@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -46,6 +47,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /search `<запрос>` — поиск в аутлете\n"
         "• /help — справка\n\n"
         "Просто скопируй ссылку с outlet.tsum.ru и отправь мне 🔗"
+    )
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🛍 Открыть каталог", web_app=WebAppInfo(url="https://nikitasever.github.io/tsum-outlet-miniapp"))
+    ]])
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
