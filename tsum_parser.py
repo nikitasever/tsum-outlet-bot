@@ -234,6 +234,7 @@ class TsumOutletParser:
                 "name": item.get("title") or item.get("name") or "—",
                 "price": int(price) if price else None,
                 "old_price": int(old_price) if old_price else None,
+                "image_url": item.get("imageUrl"),
                 "url": f"https://outlet.tsum.ru/product/{slug}",
             })
         return out
