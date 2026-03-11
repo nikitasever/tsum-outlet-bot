@@ -206,44 +206,37 @@ class TsumOutletParser:
 
     async def _api_search(self, query: str, limit: int) -> list:
         sess = await self._session_()
-        # POST с JSON телом
-        bodies = [
-            {"q": query},
-            
-            
-            
-        ]
-        for body in bodies:
-            try:
-                async with sess.post(SEARCH_URL, json=body) as r:
-                    if r.status == 200:
-                        data = await r.json(content_type=None)
-                        items = (
-                            data.get("products") or data.get("items") or
-                            data.get("data") or data.get("results") or
-                            (data if isinstance(data, list) else [])
-                        )
-                        if items:
-                            logger.info(f"Search OK with body: {body}")
-                            return self._norm_search_list(items)
-            except Exception as e:
-                logger.debug(f"Search POST error: {e}")
-
-        # GET fallback
-        for params in [
-            {"q": query, "limit": limit},
-            {"query": query, "limit": limit},
-        ]:
-            try:
-                async with sess.get(SEARCH_URL, params=params) as r:
-                    if r.status == 200:
-                        data = await r.json(content_type=None)
-                        items = data.get("products") or data.get("items") or data.get("data") or []
-                        if items:
-                            return self._norm_search_list(items)
-            except Exception as e:
-                logger.debug(f"Search GET error: {e}")
+        try:
+            async with sess.post(SEARCH_URL, json={"q": query}) as r:
+                if r.status == 200:
+                    data = await r.json(content_type=None)
+                    items = data.get("models") or data.get("products") or data.get("items") or []
+                    if items:
+                        return self._norm_models_list(items[:limit])
+        except Exception as e:
+            logger.debug(f"Search error: {e}")
         return []
+
+    def _norm_models_list(self, items: list) -> list:
+        out = []
+        for item in items:
+            brand = item.get("brand") or {}
+            brand_name = brand.get("title") or brand.get("name") if isinstance(brand, dict) else str(brand or "—")
+            offers = item.get("offers") or []
+            price, old_price = None, None
+            if offers:
+                p = offers[0].get("price") or {}
+                price = p.get("priceWithDiscount") or p.get("currentPrice")
+                old_price = p.get("originalPrice") or p.get("oldPrice")
+            slug = item.get("slug") or str(item.get("id", ""))
+            out.append({
+                "brand": brand_name or "—",
+                "name": item.get("title") or item.get("name") or "—",
+                "price": int(price) if price else None,
+                "old_price": int(old_price) if old_price else None,
+                "url": f"https://outlet.tsum.ru/product/{slug}"
+            })
+        return out
 
     async def _html_search(self, query: str, limit: int) -> list:
         try:
