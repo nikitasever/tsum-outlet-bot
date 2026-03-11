@@ -211,7 +211,7 @@ class TsumOutletParser:
             async with sess.get(SEARCH_URL, params={"q": query, "x-store": "outlet"}) as r:
                 logger.error(f"Search status: {r.status}")
                 data = await r.json(content_type=None)
-                logger.error(f"Search keys: {list(data.keys()) if isinstance(data, dict) else str(data)[:200]}")
+                logger.error(f"Search response: {str(data)[:1000]}")
                 items = (
                     data.get("models") or data.get("products") or
                     data.get("items") or data.get("data") or
