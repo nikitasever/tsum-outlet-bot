@@ -9,7 +9,8 @@ logger = logging.getLogger(__name__)
 
 BASE_URL   = "https://outlet.tsum.ru"
 API_BASE   = "https://api.tsum.ru"
-SEARCH_URL = f"{API_BASE}/seo/info"
+SEARCH_URL     = f"{API_BASE}/catalog/filter"
+SUGGEST_URL    = f"{API_BASE}/catalog/search/suggestion"
 PRODUCT_URL = f"{API_BASE}/v4/catalog/product"
 
 HEADERS = {
@@ -207,12 +208,15 @@ class TsumOutletParser:
     async def _api_search(self, query: str, limit: int) -> list:
         sess = await self._session_()
         try:
-            async with sess.post(SEARCH_URL, json={"q": query}) as r:
-                logger.error(f"Search status: {r.status}, url: {r.url}")
+            async with sess.get(SEARCH_URL, params={"q": query, "x-store": "outlet"}) as r:
+                logger.error(f"Search status: {r.status}")
                 data = await r.json(content_type=None)
-                logger.error(f"Search response keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
-                logger.error(f"Search response: {str(data)[:500]}")
-                items = data.get("models") or data.get("products") or data.get("items") or []
+                logger.error(f"Search keys: {list(data.keys()) if isinstance(data, dict) else str(data)[:200]}")
+                items = (
+                    data.get("models") or data.get("products") or
+                    data.get("items") or data.get("data") or
+                    (data if isinstance(data, list) else [])
+                )
                 if items:
                     return self._norm_models_list(items[:limit])
         except Exception as e:
