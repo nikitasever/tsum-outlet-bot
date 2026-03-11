@@ -148,3 +148,50 @@ async def coming_soon():
     catalog = load_catalog()
     items = [v["product"] for v in catalog.values() if v["product"].get("coming_soon")]
     return {"count": len(items), "items": items}
+import asyncio
+from tsum_parser import TsumOutletParser
+
+SCAN_CATEGORIES = [
+    "ремень", "сумка", "туфли", "пальто", "кошелек",
+    "кроссовки", "кольцо", "куртка", "брюки", "платье",
+    "пиджак", "рубашка", "свитер", "шарф", "перчатки",
+    "ботинки", "кеды", "лоферы", "клатч", "рюкзак",
+    "часы", "очки", "браслет", "серьги", "галстук",
+]
+
+async def scan_all_categories():
+    scanner = TsumOutletParser()
+    while True:
+        try:
+            for q in SCAN_CATEGORIES:
+                results = await scanner.search_products(q, limit=40)
+                if results:
+                    catalog = load_catalog()
+                    sold = load_sold()
+                    now = int(time.time())
+                    for p in results:
+                        url = p.get("url")
+                        if not url:
+                            continue
+                        prev = catalog.get(url)
+                        if prev and prev["product"].get("available") and not p.get("available"):
+                            sold.append({"product": p, "ts": now, "prev_price": prev["product"].get("price")})
+                        if url not in catalog:
+                            catalog[url] = {"product": p, "history": []}
+                        catalog[url]["product"] = p
+                        history = catalog[url]["history"]
+                        if not history or history[-1]["price"] != p.get("price"):
+                            history.append({"price": p.get("price"), "ts": now})
+                        catalog[url]["history"] = history[-30:]
+                    save_catalog(catalog)
+                    save_sold(sold[-1000:])
+                await asyncio.sleep(2)  # пауза между запросами
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Scanner error: {e}")
+        await asyncio.sleep(2 * 60 * 60)  # следующий полный обход через 2 часа
+
+
+@app.on_event("startup")
+async def startup():
+    asyncio.create_task(scan_all_categories())
