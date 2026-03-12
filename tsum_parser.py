@@ -175,7 +175,172 @@ class TsumOutletParser:
         )
         return all_items, total_items
 
-    async def scan_coming_soon_api(self) -> list:
+    async def scan_search_index(
+        self,
+        known_urls: set,
+        max_pages: int = 20,
+        yandex_user: str = "",
+        yandex_key: str = "",
+    ) -> list:
+        """
+        Find historically sold products from search engine indexes.
+        Source 1: DuckDuckGo (no key needed)
+        Source 2: Yandex XML API (requires user+key from xml.yandex.ru)
+
+        Returns list of dicts: {url, slug, status: 'sold'|'available'|'unknown'}
+        """
+        sess = await self._session_()
+        found_urls = set()
+
+        # ── Source 1: DuckDuckGo ──────────────────────────────────────────────
+        ddg_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "text/html",
+            "Accept-Language": "ru",
+        }
+        logger.info("Search index: starting DuckDuckGo scan...")
+        for page_num in range(max_pages):
+            try:
+                params = f"q=site%3Aoutlet.tsum.ru%2Fproduct%2F&s={page_num * 20}"
+                async with sess.get(
+                    f"https://html.duckduckgo.com/html/?{params}",
+                    headers=ddg_headers,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as r:
+                    if r.status != 200:
+                        logger.info(f"DDG stopped at page {page_num}: status {r.status}")
+                        break
+                    html = await r.text()
+
+                soup     = BeautifulSoup(html, "html.parser")
+                page_urls = self._extract_product_urls(soup, html)
+                new_urls  = page_urls - found_urls - known_urls
+                found_urls |= page_urls
+                logger.info(f"DDG page {page_num+1}: {len(page_urls)} URLs, {len(new_urls)} new")
+
+                # DDG returns empty results page when exhausted
+                if not soup.select(".result__url"):
+                    break
+                await asyncio.sleep(2.5)
+
+            except Exception as e:
+                logger.error(f"DDG page {page_num} error: {e}")
+                break
+
+        logger.info(f"DDG total: {len(found_urls)} URLs found")
+
+        # ── Source 2: Yandex XML ──────────────────────────────────────────────
+        if yandex_user and yandex_key:
+            logger.info("Search index: starting Yandex XML scan...")
+            yandex_url = "https://yandex.ru/search/xml"
+            for page_num in range(max_pages):
+                try:
+                    params = {
+                        "user":   yandex_user,
+                        "key":    yandex_key,
+                        "query":  "site:outlet.tsum.ru/product/",
+                        "page":   page_num,
+                        "groupby": "attr=d.mode=deep.groups-on-page=10.docs-in-group=1",
+                        "lr":     "213",  # Moscow
+                    }
+                    async with sess.get(
+                        yandex_url, params=params,
+                        timeout=aiohttp.ClientTimeout(total=15),
+                    ) as r:
+                        if r.status != 200:
+                            logger.info(f"Yandex XML stopped at page {page_num}: status {r.status}")
+                            break
+                        xml_text = await r.text()
+
+                    # Parse XML response
+                    soup_xml  = BeautifulSoup(xml_text, "xml")
+                    page_urls = set()
+                    for url_tag in soup_xml.find_all("url"):
+                        url = url_tag.get_text(strip=True)
+                        if "outlet.tsum.ru/product/" in url:
+                            clean = url.rstrip("/")
+                            page_urls.add(clean)
+
+                    # Also check <error> tag
+                    error = soup_xml.find("error")
+                    if error:
+                        logger.warning(f"Yandex XML error: {error.get_text()}")
+                        break
+
+                    new_urls   = page_urls - found_urls - known_urls
+                    found_urls |= page_urls
+                    logger.info(f"Yandex XML page {page_num+1}: {len(page_urls)} URLs, {len(new_urls)} new")
+
+                    if not page_urls:
+                        break
+                    await asyncio.sleep(1)
+
+                except Exception as e:
+                    logger.error(f"Yandex XML page {page_num} error: {e}")
+                    break
+
+            logger.info(f"After Yandex XML: {len(found_urls)} total URLs")
+        else:
+            logger.info("Yandex XML skipped (no credentials)")
+
+        # ── Step 2: check which URLs no longer exist ──────────────────────────
+        unknown_urls = list(found_urls - known_urls)
+        logger.info(f"Checking {len(unknown_urls)} URLs not in our catalog...")
+
+        if not unknown_urls:
+            return []
+
+        results = []
+        sem = asyncio.Semaphore(5)
+
+        async def check_url(url: str) -> dict:
+            async with sem:
+                await asyncio.sleep(0.3)
+                slug = self._slug(url)
+                try:
+                    async with sess.get(
+                        url,
+                        headers={**HEADERS, "Accept": "text/html"},
+                        allow_redirects=True,
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as r:
+                        if r.status == 404:
+                            return {"url": url, "slug": slug, "status": "sold"}
+                        elif r.status == 200:
+                            return {"url": url, "slug": slug, "status": "available"}
+                        else:
+                            return {"url": url, "slug": slug, "status": "unknown", "http": r.status}
+                except Exception as e:
+                    logger.debug(f"Check URL {url}: {e}")
+                    return {"url": url, "slug": slug, "status": "unknown"}
+
+        checks = await asyncio.gather(*[check_url(u) for u in unknown_urls[:500]])
+        for item in checks:
+            if item["status"] == "sold":
+                results.append(item)
+
+        logger.info(f"Search index scan done: {len(results)} historically sold products")
+        return results
+
+    def _extract_product_urls(self, soup: BeautifulSoup, raw_html: str) -> set:
+        """Extract all outlet.tsum.ru/product/* URLs from a parsed page."""
+        urls = set()
+        pattern = re.compile(r"outlet\.tsum\.ru/product/([a-zA-Z0-9_-]+)")
+
+        # From <a> tags
+        for link in soup.find_all("a", href=True):
+            href = link["href"]
+            m = re.search(r"(https?://outlet\.tsum\.ru/product/[^&\"'\s/]+)", href)
+            if m:
+                urls.add(m.group(1))
+
+        # From raw text (catches encoded URLs too)
+        for m in pattern.finditer(raw_html):
+            urls.add(f"https://outlet.tsum.ru/product/{m.group(1)}")
+
+        return urls
+
+
         """
         Try multiple API strategies to find coming_soon items.
         Strategy 1: filter availableSoon=true directly in search
