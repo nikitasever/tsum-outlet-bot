@@ -36,6 +36,8 @@ class TsumOutletParser:
             )
         return self._session
 
+    # ── Public API ───────────────────────────────────────────────────────────
+
     async def get_product(self, url: str) -> Optional[dict]:
         url = url.strip().rstrip("/")
         slug = self._slug(url)
@@ -43,6 +45,72 @@ class TsumOutletParser:
         if p:
             return p
         return await self._html_product(url)
+
+    async def search_products(self, query: str, limit: int = 8) -> list:
+        results = await self._api_search(query, limit)
+        return results or await self._html_search(query, limit)
+
+    async def get_coming_soon(self, category_url: str) -> list:
+        """Parse HTML category page to find 'Ожидается поступление' block."""
+        try:
+            sess = await self._session_()
+            headers = {**HEADERS, "Accept": "text/html,application/xhtml+xml"}
+            async with sess.get(category_url, headers=headers) as r:
+                if r.status != 200:
+                    return []
+                html = await r.text()
+            soup = BeautifulSoup(html, "html.parser")
+
+            # Find block with class containing 'availableSoon'
+            coming_block = soup.find(
+                lambda tag: tag.name in ("div", "section") and
+                any("availableSoon" in (c or "") for c in tag.get("class", []))
+            )
+            if not coming_block:
+                return []
+
+            results = []
+            for card in coming_block.select("a[href*='/product/']"):
+                href = card.get("href", "")
+                if not href.startswith("http"):
+                    href = BASE_URL + href
+
+                img = card.select_one("img[src], img[data-src]")
+                image_url = None
+                if img:
+                    image_url = img.get("src") or img.get("data-src")
+                    # Skip tiny placeholder images
+                    if image_url and ("placeholder" in image_url or len(image_url) < 20):
+                        image_url = None
+
+                # Try to find brand/name/price in card
+                brand_el = card.select_one("[class*='brand'], [class*='Brand']")
+                name_el  = card.select_one("[class*='name'], [class*='Name'], [class*='title'], [class*='Title']")
+                price_el = card.select_one("[class*='price'], [class*='Price']")
+                old_price_el = card.select_one("[class*='old'], [class*='Old'], [class*='crossed'], [class*='original']")
+
+                brand = brand_el.get_text(strip=True) if brand_el else "—"
+                name  = name_el.get_text(strip=True) if name_el else "—"
+                price = self._price(price_el.get_text() if price_el else "")
+                old_price = self._price(old_price_el.get_text() if old_price_el else "")
+
+                if href and href != BASE_URL:
+                    results.append({
+                        "brand":       brand,
+                        "name":        name,
+                        "price":       price,
+                        "old_price":   old_price if old_price and old_price != price else None,
+                        "image_url":   image_url,
+                        "url":         href,
+                        "available":   False,
+                        "coming_soon": True,
+                    })
+            return results
+        except Exception as e:
+            logger.error(f"Coming soon parse error {category_url}: {e}")
+            return []
+
+    # ── Product fetching ─────────────────────────────────────────────────────
 
     async def _api_product(self, slug: str, url: str) -> Optional[dict]:
         if not slug:
@@ -170,6 +238,8 @@ class TsumOutletParser:
             "coming_soon": False,
         }
 
+    # ── Normalization ────────────────────────────────────────────────────────
+
     def _norm_product(self, data: dict, url: str) -> Optional[dict]:
         item = data.get("product") or data.get("item") or data.get("data") or data
         if not isinstance(item, dict) or not item.get("name"):
@@ -202,7 +272,7 @@ class TsumOutletParser:
                         "qty": int(qty) if qty else None,
                     })
         available = any(s["available"] for s in sizes) if sizes else bool(item.get("available", item.get("inStock", True)))
-        # coming_soon определяем только если API вернул quantity
+        # coming_soon: all offers have quantity=0 and isBuyable=True
         coming_soon = False
         if offers_list:
             has_qty_info     = any("quantity" in o for o in offers_list)
@@ -210,7 +280,6 @@ class TsumOutletParser:
             if has_qty_info:
                 all_zero   = all(int(o.get("quantity", 0)) == 0 for o in offers_list)
                 is_buyable = any(o.get("isBuyable", False) for o in offers_list)
-                # Если isBuyable не передаётся вовсе — достаточно all_zero
                 coming_soon = all_zero and (is_buyable or not has_buyable_info)
         colors = []
         cf = item.get("color") or item.get("colors") or []
@@ -220,39 +289,19 @@ class TsumOutletParser:
             colors = [c.get("name", c) if isinstance(c, dict) else str(c) for c in cf]
         condition = item.get("condition") or item.get("grade") or item.get("state")
         return {
-            "brand": brand_name,
-            "name": item.get("name") or item.get("title") or "—",
-            "article": item.get("article") or item.get("sku") or item.get("vendorCode"),
-            "price": price,
+            "brand":     brand_name,
+            "name":      item.get("name") or item.get("title") or "—",
+            "article":   item.get("article") or item.get("sku") or item.get("vendorCode"),
+            "price":     price,
             "old_price": old_price,
-            "discount": discount,
+            "discount":  discount,
             "available": available,
-            "sizes": sizes,
-            "colors": colors,
+            "sizes":     sizes,
+            "colors":    colors,
             "condition": str(condition) if condition else None,
-            "url": item.get("url") or url,
+            "url":       item.get("url") or url,
             "coming_soon": coming_soon,
         }
-
-    async def search_products(self, query: str, limit: int = 8) -> list:
-        results = await self._api_search(query, limit)
-        return results or await self._html_search(query, limit)
-
-    async def _api_search(self, query: str, limit: int) -> list:
-        sess = await self._session_()
-        try:
-            async with sess.post(
-                f"{API_BASE}/v4/catalog/search",
-                json={"q": query}
-            ) as r:
-                if r.status == 200:
-                    data = await r.json(content_type=None)
-                    items = data.get("models") or []
-                    if items:
-                        return self._norm_models_list(items[:limit])
-        except Exception as e:
-            logger.error(f"Search error: {e}")
-        return []
 
     def _norm_models_list(self, items: list) -> list:
         out = []
@@ -292,6 +341,24 @@ class TsumOutletParser:
             })
         return out
 
+    # ── Search ───────────────────────────────────────────────────────────────
+
+    async def _api_search(self, query: str, limit: int) -> list:
+        sess = await self._session_()
+        try:
+            async with sess.post(
+                f"{API_BASE}/v4/catalog/search",
+                json={"q": query}
+            ) as r:
+                if r.status == 200:
+                    data = await r.json(content_type=None)
+                    items = data.get("models") or []
+                    if items:
+                        return self._norm_models_list(items[:limit])
+        except Exception as e:
+            logger.error(f"Search error: {e}")
+        return []
+
     async def _html_search(self, query: str, limit: int) -> list:
         try:
             sess = await self._session_()
@@ -326,16 +393,12 @@ class TsumOutletParser:
                     href = BASE_URL + href
                 if name:
                     results.append({
-                        "brand": brand or "—",
-                        "name": name,
-                        "price": price,
-                        "url": href,
-                        "available": True,
-                        "coming_soon": False,
+                        "brand": brand or "—", "name": name, "price": price,
+                        "url": href, "available": True, "coming_soon": False,
                     })
             return results
         except Exception as e:
-            logger.error(f"Search error: {e}")
+            logger.error(f"HTML search error: {e}")
             return []
 
     def _norm_search_list(self, items: list) -> list:
@@ -356,6 +419,8 @@ class TsumOutletParser:
                 "coming_soon": False,
             })
         return out
+
+    # ── Helpers ──────────────────────────────────────────────────────────────
 
     def _slug(self, url: str) -> str:
         for pat in [
