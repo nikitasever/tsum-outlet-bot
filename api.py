@@ -14,10 +14,16 @@ from tracker import ProductTracker
 
 logger = logging.getLogger(__name__)
 
-CATALOG_FILE = "catalog_store.json"
-SOLD_FILE    = "sold_store.json"
-EVENTS_FILE  = "events_store.json"
-META_FILE    = "scan_meta.json"
+# ── Persistent storage directory ─────────────────────────────────────────────
+# On Railway: mount a Volume at /data so files survive redeploys.
+# Locally falls back to current directory.
+DATA_DIR = "/data" if os.path.isdir("/data") else "."
+
+CATALOG_FILE   = os.path.join(DATA_DIR, "catalog_store.json")
+SOLD_FILE      = os.path.join(DATA_DIR, "sold_store.json")
+EVENTS_FILE    = os.path.join(DATA_DIR, "events_store.json")
+META_FILE      = os.path.join(DATA_DIR, "scan_meta.json")
+HIST_SOLD_FILE = os.path.join(DATA_DIR, "historical_sold.json")
 
 
 # ── Storage helpers ──────────────────────────────────────────────────────────
@@ -67,6 +73,18 @@ def load_meta():
 
 def save_meta(data):
     with open(META_FILE, "w") as f:
+        json.dump(data, f, ensure_ascii=False)
+
+
+def load_historical_sold():
+    if os.path.exists(HIST_SOLD_FILE):
+        with open(HIST_SOLD_FILE) as f:
+            return json.load(f)
+    return []
+
+
+def save_historical_sold(data):
+    with open(HIST_SOLD_FILE, "w") as f:
         json.dump(data, f, ensure_ascii=False)
 
 
@@ -220,9 +238,42 @@ async def scan_all_categories():
 
 # ── App lifecycle ────────────────────────────────────────────────────────────
 
+async def scan_search_history():
+    """
+    Runs once at startup (after first catalog scan) and then daily.
+    Finds historically sold products via search engine indexing.
+    """
+    scanner = TsumOutletParser()
+    # Wait for first catalog scan to complete
+    await asyncio.sleep(5 * 60)
+    while True:
+        try:
+            from config import YANDEX_XML_USER, YANDEX_XML_KEY
+            catalog   = load_catalog()
+            known_urls = set(catalog.keys())
+            logger.info(f"Starting search index scan ({len(known_urls)} known URLs)...")
+            results = await scanner.scan_search_index(
+                known_urls,
+                max_pages=20,
+                yandex_user=YANDEX_XML_USER,
+                yandex_key=YANDEX_XML_KEY,
+            )
+            if results:
+                hist      = load_historical_sold()
+                existing  = {r["url"] for r in hist}
+                new_items = [r for r in results if r["url"] not in existing]
+                hist.extend(new_items)
+                save_historical_sold(hist[-5000:])
+                logger.info(f"Search index: added {len(new_items)} new historical sold items")
+        except Exception as e:
+            logger.error(f"Search index scan error: {e}")
+        await asyncio.sleep(24 * 60 * 60)  # run daily
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     asyncio.create_task(scan_all_categories())
+    asyncio.create_task(scan_search_history())
     yield
 
 
@@ -352,6 +403,16 @@ async def stats():
         "price_drops":  [i["product"] for i in price_drops[:20]],
         "top_views":    [{"product": i["product"], "views":  views[i["product"]["url"]]}  for i in top_views],
         "top_clicks":   [{"product": i["product"], "clicks": clicks[i["product"]["url"]]} for i in top_clicks],
+    }
+
+
+@app.get("/api/sold/history")
+async def sold_history(limit: int = 50):
+    """Historically sold products found via search engine index."""
+    hist = load_historical_sold()
+    return {
+        "count": len(hist),
+        "items": hist[-limit:][::-1],
     }
 
 
