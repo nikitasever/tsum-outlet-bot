@@ -250,7 +250,7 @@ class TsumOutletParser:
     
                available   = has_stock
                coming_soon = all_zero and is_buyable  # нет остатков, но можно купить = ожидается
-                    False
+               False
                 )
             slug = item.get("slug") or str(item.get("id", ""))
             images = item.get("images") or []
