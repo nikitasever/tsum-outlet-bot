@@ -209,7 +209,8 @@ class TsumOutletParser:
             if has_qty_info:
                 all_zero   = all(int(o.get("quantity", 0)) == 0 for o in offers_list)
                 is_buyable = any(o.get("isBuyable", False) for o in offers_list)
-                coming_soon = all_zero and is_buyable
+                has_buyable_field = any("isBuyable" in o for o in offers_list)
+                coming_soon = all_zero and (is_buyable or not has_buyable_field)
             else:
                 coming_soon = False
         else:
@@ -274,7 +275,8 @@ class TsumOutletParser:
                     all_zero   = all(int(o.get("quantity", 0)) == 0 for o in offers)
                     is_buyable = any(o.get("isBuyable", False) for o in offers)
                     available   = has_stock
-                    coming_soon = all_zero and is_buyable
+                    # isBuyable может не прийти из search API — достаточно all_zero
+                    coming_soon = all_zero and (is_buyable or not any("isBuyable" in o for o in offers))
                 else:
                     available   = True
                     coming_soon = False
