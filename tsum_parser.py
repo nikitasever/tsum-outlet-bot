@@ -65,13 +65,15 @@ class TsumOutletParser:
     async def scan_full_catalog(self) -> tuple[list, int]:
         """
         Scan the full outlet catalog using concurrent requests.
-        Returns (items, api_total_count) where api_total_count is the
-        official totalCount reported by the TSUM API.
+        Returns (items, api_total_count).
+        Two-pass strategy:
+          Pass 1 — concurrent (semaphore=10), collect failed pages
+          Pass 2 — retry failed pages sequentially with delay
         """
         sess = await self._session_()
         sem  = asyncio.Semaphore(SCAN_CONCURRENCY)
 
-        # Step 1: first page to get pageCount
+        # Step 1: page 1 to get total
         try:
             async with sess.post(
                 f"{API_BASE}/v4/catalog/search",
@@ -86,13 +88,16 @@ class TsumOutletParser:
             logger.error(f"Catalog scan page 1 failed: {e}")
             return [], 0
 
-        logger.info(f"Catalog scan started: {total_items} items across {total_pages} pages "
-                    f"(concurrency={SCAN_CONCURRENCY})")
+        logger.info(
+            f"Catalog scan started: {total_items} items, "
+            f"{total_pages} pages (concurrency={SCAN_CONCURRENCY})"
+        )
 
-        all_items = self._norm_models_list(first_items)
+        all_items   = self._norm_models_list(first_items)
+        failed_pages = []
 
-        # Step 2: fetch remaining pages concurrently
-        async def fetch_page(page: int) -> list:
+        # Step 2: concurrent pass
+        async def fetch_page(page: int) -> tuple[int, list]:
             async with sem:
                 for attempt in range(3):
                     try:
@@ -104,21 +109,63 @@ class TsumOutletParser:
                                 await asyncio.sleep(2 ** attempt)
                                 continue
                             if r.status != 200:
-                                return []
+                                logger.debug(f"Page {page} status {r.status}")
+                                return page, []
                             d = await r.json(content_type=None)
-                            return self._norm_models_list(d.get("models") or [])
+                            items = self._norm_models_list(d.get("models") or [])
+                            return page, items
                     except Exception as e:
-                        logger.debug(f"Page {page} attempt {attempt+1} error: {e}")
+                        logger.debug(f"Page {page} attempt {attempt+1}: {e}")
                         await asyncio.sleep(1)
-                return []
+                return page, []  # mark as failed
 
         tasks   = [fetch_page(p) for p in range(2, total_pages + 1)]
         results = await asyncio.gather(*tasks)
-        for batch in results:
-            all_items.extend(batch)
+
+        for page, batch in results:
+            if batch:
+                all_items.extend(batch)
+            else:
+                failed_pages.append(page)
+
+        logger.info(
+            f"Pass 1 done: {len(all_items)} items, "
+            f"{len(failed_pages)} failed pages"
+        )
+
+        # Step 3: retry failed pages sequentially
+        if failed_pages:
+            logger.info(f"Retrying {len(failed_pages)} failed pages...")
+            retried = 0
+            for page in failed_pages:
+                await asyncio.sleep(1.5)  # gentle delay between retries
+                for attempt in range(4):
+                    try:
+                        async with sess.post(
+                            f"{API_BASE}/v4/catalog/search",
+                            json={"page": page, "limit": 40}
+                        ) as r:
+                            if r.status == 429:
+                                await asyncio.sleep(3 * (attempt + 1))
+                                continue
+                            if r.status == 200:
+                                d = await r.json(content_type=None)
+                                batch = self._norm_models_list(d.get("models") or [])
+                                all_items.extend(batch)
+                                retried += 1
+                                break
+                    except Exception as e:
+                        logger.debug(f"Retry page {page} attempt {attempt+1}: {e}")
+                        await asyncio.sleep(2)
+
+            logger.info(f"Pass 2 done: recovered {retried}/{len(failed_pages)} pages")
 
         fetched = len(all_items)
-        logger.info(f"Catalog scan done: fetched={fetched}, api_total={total_items}")
+        coverage = round(fetched / total_items * 100, 1) if total_items else 0
+        logger.info(
+            f"Catalog scan complete: {fetched}/{total_items} items "
+            f"({coverage}% coverage)"
+        )
         return all_items, total_items
 
     async def scan_coming_soon_api(self) -> list:
