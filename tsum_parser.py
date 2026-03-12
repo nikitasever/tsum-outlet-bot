@@ -133,32 +133,39 @@ class TsumOutletParser:
             f"{len(failed_pages)} failed pages"
         )
 
-        # Step 3: retry failed pages sequentially
+        # Step 3: retry failed pages in small batches
         if failed_pages:
-            logger.info(f"Retrying {len(failed_pages)} failed pages...")
-            retried = 0
-            for page in failed_pages:
-                await asyncio.sleep(1.5)  # gentle delay between retries
-                for attempt in range(4):
-                    try:
-                        async with sess.post(
-                            f"{API_BASE}/v4/catalog/search",
-                            json={"page": page, "limit": 40}
-                        ) as r:
-                            if r.status == 429:
-                                await asyncio.sleep(3 * (attempt + 1))
-                                continue
-                            if r.status == 200:
-                                d = await r.json(content_type=None)
-                                batch = self._norm_models_list(d.get("models") or [])
-                                all_items.extend(batch)
-                                retried += 1
-                                break
-                    except Exception as e:
-                        logger.debug(f"Retry page {page} attempt {attempt+1}: {e}")
-                        await asyncio.sleep(2)
+            logger.info(f"Retrying {len(failed_pages)} failed pages in batches of 5...")
+            retry_sem = asyncio.Semaphore(5)
+            recovered = 0
 
-            logger.info(f"Pass 2 done: recovered {retried}/{len(failed_pages)} pages")
+            async def retry_page(page: int) -> tuple[int, list]:
+                async with retry_sem:
+                    await asyncio.sleep(0.5)
+                    for attempt in range(4):
+                        try:
+                            async with sess.post(
+                                f"{API_BASE}/v4/catalog/search",
+                                json={"page": page, "limit": 40}
+                            ) as r:
+                                if r.status == 429:
+                                    await asyncio.sleep(2 * (attempt + 1))
+                                    continue
+                                if r.status == 200:
+                                    d = await r.json(content_type=None)
+                                    return page, self._norm_models_list(d.get("models") or [])
+                        except Exception as e:
+                            logger.debug(f"Retry page {page} attempt {attempt+1}: {e}")
+                            await asyncio.sleep(1)
+                    return page, []
+
+            retry_results = await asyncio.gather(*[retry_page(p) for p in failed_pages])
+            for page, batch in retry_results:
+                if batch:
+                    all_items.extend(batch)
+                    recovered += 1
+
+            logger.info(f"Pass 2 done: recovered {recovered}/{len(failed_pages)} pages")
 
         fetched = len(all_items)
         coverage = round(fetched / total_items * 100, 1) if total_items else 0
