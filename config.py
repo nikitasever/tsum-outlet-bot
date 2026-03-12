@@ -11,5 +11,7 @@ MAX_TRACKED_PER_USER = 20
 # Яндекс XML API для поиска исторически проданных товаров
 # Получить бесплатно: https://xml.yandex.ru → "Получить ключ"
 # Бесплатный лимит: 1000 запросов/день, 10 страниц по 10 результатов = 100 URL/запуск
-YANDEX_XML_USER = ""   # например "your@yandex.ru"
-YANDEX_XML_KEY  = ""   # ключ с xml.yandex.ru
+# Яндекс XML API
+YANDEX_XML_USER = "nicitalaktionov@yandex.ru"
+YANDEX_XML_KEY  = "AQVN22jUMSlxYbPzay0zicxG99u1n1Tx4XQnRckn"
+ 
