@@ -445,6 +445,10 @@ async def debug():
         # Точные цифры
         "api_total":          meta.get("api_total", "не скачано"),
         "fetched_last_scan":  meta.get("fetched_this_scan", "—"),
+        "coverage_pct":       (
+            round(meta["fetched_this_scan"] / meta["api_total"] * 100, 1)
+            if meta.get("fetched_this_scan") and meta.get("api_total") else "—"
+        ),
         "catalog_db":         total,
         "available":          available,
         "coming_soon":        coming,
