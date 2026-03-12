@@ -9,12 +9,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from tsum_parser import TsumOutletParser
+from tsum_parser import TsumOutletParser, CATEGORY_SLUGS, COMING_SOON_URLS
 from tracker import ProductTracker
 
 logger = logging.getLogger(__name__)
 
-# ── Storage helpers ─────────────────────────────────────────────────────────
+# ── Storage helpers ──────────────────────────────────────────────────────────
 
 CATALOG_FILE = "catalog_store.json"
 SOLD_FILE    = "sold_store.json"
@@ -57,38 +57,17 @@ def save_events(data):
         json.dump(data, f, ensure_ascii=False)
 
 
-# ── Background scanner ───────────────────────────────────────────────────────
-
-SCAN_CATEGORIES = [
-    "ремень", "сумка", "туфли", "пальто", "кошелек",
-    "кроссовки", "кольцо", "куртка", "брюки", "платье",
-    "пиджак", "рубашка", "свитер", "шарф", "перчатки",
-    "ботинки", "кеды", "лоферы", "клатч", "рюкзак",
-    "часы", "очки", "браслет", "серьги", "галстук",
-]
-
-SCAN_COMING_SOON_URLS = [
-    "https://outlet.tsum.ru/catalog/women-odezhda/",
-    "https://outlet.tsum.ru/catalog/men-odezhda/",
-    "https://outlet.tsum.ru/catalog/women-obuv/",
-    "https://outlet.tsum.ru/catalog/men-obuv/",
-    "https://outlet.tsum.ru/catalog/women-sumki/",
-    "https://outlet.tsum.ru/catalog/aksessuary/",
-    "https://outlet.tsum.ru/catalog/yuvelirnye-ukrasheniya/",
-]
-
-
 def _upsert_product(catalog: dict, sold: list, p: dict, now: int):
     """Save product to catalog, detect sales."""
     url = p.get("url")
     if not url:
         return
     prev = catalog.get(url)
-    # Detect sale: was available, now not
+    # Detect sale: was available, now not available and not coming_soon
     if prev and prev["product"].get("available") and not p.get("available") and not p.get("coming_soon"):
         sold.append({
-            "product": p,
-            "ts": now,
+            "product":    p,
+            "ts":         now,
             "prev_price": prev["product"].get("price"),
         })
     if url not in catalog:
@@ -100,33 +79,38 @@ def _upsert_product(catalog: dict, sold: list, p: dict, now: int):
     catalog[url]["history"] = history[-30:]
 
 
+# ── Background scanner ───────────────────────────────────────────────────────
+
 async def scan_all_categories():
     scanner = TsumOutletParser()
     while True:
         try:
-            logger.info("🔍 Сканирование каталога...")
+            logger.info("🔍 Начало сканирования каталога...")
             catalog = load_catalog()
-            sold = load_sold()
-            now = int(time.time())
+            sold    = load_sold()
+            now     = int(time.time())
 
-            # Search-based scan
-            for q in SCAN_CATEGORIES:
+            # Full category scan with pagination
+            for slug in CATEGORY_SLUGS:
                 try:
-                    results = await scanner.search_products(q, limit=40)
+                    results = await scanner.scan_category(slug, max_pages=15)
                     for p in results:
                         _upsert_product(catalog, sold, p, now)
+                    # Save after each category to avoid data loss
+                    save_catalog(catalog)
+                    save_sold(sold[-1000:])
                 except Exception as e:
-                    logger.error(f"Scan category '{q}' error: {e}")
-                await asyncio.sleep(2)
+                    logger.error(f"Category scan error '{slug}': {e}")
+                await asyncio.sleep(3)
 
             # HTML-based coming_soon scan
-            for cat_url in SCAN_COMING_SOON_URLS:
+            for cat_url in COMING_SOON_URLS:
                 try:
                     coming = await scanner.get_coming_soon(cat_url)
                     for p in coming:
                         _upsert_product(catalog, sold, p, now)
                     if coming:
-                        logger.info(f"Coming soon from {cat_url}: {len(coming)} items")
+                        save_catalog(catalog)
                 except Exception as e:
                     logger.error(f"Coming soon scan error {cat_url}: {e}")
                 await asyncio.sleep(3)
@@ -138,7 +122,7 @@ async def scan_all_categories():
         except Exception as e:
             logger.error(f"Scanner error: {e}")
 
-        await asyncio.sleep(2 * 60 * 60)  # следующий обход через 2 часа
+        await asyncio.sleep(2 * 60 * 60)  # next full scan in 2 hours
 
 
 # ── App lifecycle ────────────────────────────────────────────────────────────
@@ -202,19 +186,20 @@ async def untrack(user_id: int, url: str):
 @app.get("/api/categories")
 async def categories():
     return {"categories": [
-        {"id": 18644, "title": "Ремни",      "slug": "remni-18644"},
-        {"id": 18413, "title": "Одежда",     "slug": "odezhda"},
-        {"id": 18000, "title": "Обувь",      "slug": "obuv"},
-        {"id": 18100, "title": "Сумки",      "slug": "sumki"},
-        {"id": 18200, "title": "Аксессуары", "slug": "aksessuary"},
+        {"id": 1, "title": "Женская одежда", "slug": "women-odezhda"},
+        {"id": 2, "title": "Мужская одежда", "slug": "men-odezhda"},
+        {"id": 3, "title": "Женская обувь",  "slug": "women-obuv"},
+        {"id": 4, "title": "Мужская обувь",  "slug": "men-obuv"},
+        {"id": 5, "title": "Сумки",          "slug": "women-sumki"},
+        {"id": 6, "title": "Аксессуары",     "slug": "aksessuary"},
     ]}
 
 
 @app.post("/api/catalog/save")
 async def catalog_save(products: list[dict]):
     catalog = load_catalog()
-    sold = load_sold()
-    now = int(time.time())
+    sold    = load_sold()
+    now     = int(time.time())
     for p in products:
         _upsert_product(catalog, sold, p, now)
     save_catalog(catalog)
@@ -241,8 +226,8 @@ async def stats():
     events  = load_events()
     items   = list(catalog.values())
 
-    views    = Counter(e["url"] for e in events if e.get("type") == "view")
-    clicks   = Counter(e["url"] for e in events if e.get("type") == "click")
+    views  = Counter(e["url"] for e in events if e.get("type") == "view")
+    clicks = Counter(e["url"] for e in events if e.get("type") == "click")
 
     top_discount = sorted(
         items,
@@ -252,28 +237,35 @@ async def stats():
 
     price_drops = [
         i for i in items
-        if len(i["history"]) >= 2 and (i["history"][-1]["price"] or 0) < (i["history"][-2]["price"] or 0)
+        if len(i["history"]) >= 2
+        and (i["history"][-1]["price"] or 0) < (i["history"][-2]["price"] or 0)
     ]
 
-    top_views = sorted(items, key=lambda x: views.get(x["product"].get("url", ""), 0), reverse=True)
-    top_views = [i for i in top_views if views.get(i["product"].get("url", ""), 0) > 0][:20]
+    top_views = sorted(
+        [i for i in items if views.get(i["product"].get("url", ""), 0) > 0],
+        key=lambda x: views.get(x["product"].get("url", ""), 0),
+        reverse=True,
+    )[:20]
 
-    top_clicks = sorted(items, key=lambda x: clicks.get(x["product"].get("url", ""), 0), reverse=True)
-    top_clicks = [i for i in top_clicks if clicks.get(i["product"].get("url", ""), 0) > 0][:20]
+    top_clicks = sorted(
+        [i for i in items if clicks.get(i["product"].get("url", ""), 0) > 0],
+        key=lambda x: clicks.get(x["product"].get("url", ""), 0),
+        reverse=True,
+    )[:20]
 
     return {
-        "total":       len(items),
+        "total":        len(items),
         "top_discount": [i["product"] for i in top_discount],
         "price_drops":  [i["product"] for i in price_drops[:20]],
-        "top_views":    [{"product": i["product"], "views": views[i["product"]["url"]]} for i in top_views],
+        "top_views":    [{"product": i["product"], "views":  views[i["product"]["url"]]}  for i in top_views],
         "top_clicks":   [{"product": i["product"], "clicks": clicks[i["product"]["url"]]} for i in top_clicks],
     }
 
 
 @app.get("/api/sold")
 async def sold_today():
-    sold = load_sold()
-    since = int(time.time()) - 86400
+    sold   = load_sold()
+    since  = int(time.time()) - 86400
     recent = [s for s in sold if s.get("ts", 0) > since]
     return {"count": len(recent), "items": recent}
 
@@ -281,5 +273,5 @@ async def sold_today():
 @app.get("/api/coming_soon")
 async def coming_soon():
     catalog = load_catalog()
-    items = [v["product"] for v in catalog.values() if v["product"].get("coming_soon")]
+    items   = [v["product"] for v in catalog.values() if v["product"].get("coming_soon")]
     return {"count": len(items), "items": items}
