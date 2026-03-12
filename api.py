@@ -84,7 +84,11 @@ def _upsert_product(catalog, sold, p, now):
             # Individual size sold out
             for size_label, prev_size in prev_sizes.items():
                 curr_size = curr_sizes.get(size_label)
-                if prev_size.get("available") and curr_size is not None and not curr_size.get("available"):
+                if (
+                    prev_size.get("available") and
+                    curr_size is not None and
+                    not curr_size.get("available")
+                ):
                     sold.append({
                         "type": "size",
                         "product": p,
@@ -116,14 +120,28 @@ async def scan_all_categories():
             sold = load_sold()
             now = int(time.time())
 
+            # Full catalog scan — picks up coming_soon via quantity=0 + isBuyable=true
             results = await scanner.scan_full_catalog()
+            coming_in_catalog = 0
             for p in results:
                 _upsert_product(catalog, sold, p, now)
+                if p.get("coming_soon"):
+                    coming_in_catalog += 1
 
             save_catalog(catalog)
             save_sold(sold[-5000:])
-            logger.info(f"Catalog scan done in {round(time.time()-t_start, 1)}s. DB: {len(catalog)}")
+            logger.info(
+                f"Catalog scan done in {round(time.time()-t_start, 1)}s. "
+                f"DB: {len(catalog)}, coming_soon in catalog: {coming_in_catalog}"
+            )
 
+            # Strategy 1: direct API coming_soon scan (tries different filters)
+            coming_api = await scanner.scan_coming_soon_api()
+            for p in coming_api:
+                _upsert_product(catalog, sold, p, now)
+            logger.info(f"Coming soon via API filter: {len(coming_api)} items")
+
+            # Strategy 2: HTML coming_soon scan (parallel across all category URLs)
             async def scan_coming(url):
                 try:
                     return await scanner.get_coming_soon(url)
@@ -132,17 +150,22 @@ async def scan_all_categories():
                     return []
 
             coming_results = await asyncio.gather(*[scan_coming(u) for u in COMING_SOON_URLS])
+            html_count = 0
             for coming in coming_results:
                 for p in coming:
                     _upsert_product(catalog, sold, p, now)
+                    html_count += 1
+            logger.info(f"Coming soon via HTML: {html_count} items")
 
             save_catalog(catalog)
             save_sold(sold[-5000:])
 
-            sold_today = len([s for s in sold if s.get("ts", 0) > now - 86400])
+            total_coming = len([v for v in catalog.values() if v["product"].get("coming_soon")])
+            sold_today_count = len([s for s in sold if s.get("ts", 0) > now - 86400])
             logger.info(
                 f"✅ Сканирование завершено за {round(time.time()-t_start, 1)}s. "
-                f"Товаров: {len(catalog)}, продаж сегодня: {sold_today}"
+                f"Товаров: {len(catalog)}, ожидается: {total_coming}, "
+                f"продаж сегодня: {sold_today_count}"
             )
 
         except Exception as e:
@@ -302,3 +325,35 @@ async def coming_soon():
     items = [v["product"] for v in catalog.values() if v["product"].get("coming_soon")]
     return {"count": len(items), "items": items}
 
+
+@app.get("/api/debug")
+async def debug():
+    """Quick health check — shows catalog state without loading all data."""
+    catalog = load_catalog()
+    sold = load_sold()
+    now = int(time.time())
+
+    total = len(catalog)
+    available = sum(1 for v in catalog.values() if v["product"].get("available"))
+    coming = sum(1 for v in catalog.values() if v["product"].get("coming_soon"))
+    with_sizes = sum(1 for v in catalog.values() if v["product"].get("sizes"))
+    sold_24h = len([s for s in sold if s.get("ts", 0) > now - 86400])
+    sold_size = len([s for s in sold if s.get("type") == "size"])
+    sold_product = len([s for s in sold if s.get("type") == "product"])
+
+    # Sample 3 coming_soon items for inspection
+    sample_coming = [
+        v["product"] for v in catalog.values()
+        if v["product"].get("coming_soon")
+    ][:3]
+
+    return {
+        "catalog_total":     total,
+        "available":         available,
+        "coming_soon":       coming,
+        "with_sizes":        with_sizes,
+        "sold_24h":          sold_24h,
+        "sold_by_product":   sold_product,
+        "sold_by_size":      sold_size,
+        "sample_coming_soon": sample_coming,
+    }
