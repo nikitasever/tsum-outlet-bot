@@ -202,19 +202,16 @@ class TsumOutletParser:
                         "qty": int(qty) if qty else None,
                     })
         available = any(s["available"] for s in sizes) if sizes else bool(item.get("available", item.get("inStock", True)))
-        # coming_soon: есть офферы, все quantity=0, но isBuyable=True
-        # Если quantity вообще не передаётся — не считаем coming_soon
+        # coming_soon определяем только если API вернул quantity
+        coming_soon = False
         if offers_list:
-            has_qty_info = any("quantity" in o for o in offers_list)
+            has_qty_info     = any("quantity" in o for o in offers_list)
+            has_buyable_info = any("isBuyable" in o for o in offers_list)
             if has_qty_info:
                 all_zero   = all(int(o.get("quantity", 0)) == 0 for o in offers_list)
                 is_buyable = any(o.get("isBuyable", False) for o in offers_list)
-                has_buyable_field = any("isBuyable" in o for o in offers_list)
-                coming_soon = all_zero and (is_buyable or not has_buyable_field)
-            else:
-                coming_soon = False
-        else:
-            coming_soon = False
+                # Если isBuyable не передаётся вовсе — достаточно all_zero
+                coming_soon = all_zero and (is_buyable or not has_buyable_info)
         colors = []
         cf = item.get("color") or item.get("colors") or []
         if isinstance(cf, str):
@@ -269,14 +266,14 @@ class TsumOutletParser:
                 p = offers[0].get("price") or {}
                 price     = p.get("priceWithDiscount") or p.get("currentPrice")
                 old_price = p.get("originalPrice") or p.get("oldPrice")
-                has_qty_info = any("quantity" in o for o in offers)
+                has_qty_info     = any("quantity" in o for o in offers)
+                has_buyable_info = any("isBuyable" in o for o in offers)
                 if has_qty_info:
                     has_stock  = any(int(o.get("quantity", 0)) > 0 for o in offers)
                     all_zero   = all(int(o.get("quantity", 0)) == 0 for o in offers)
                     is_buyable = any(o.get("isBuyable", False) for o in offers)
                     available   = has_stock
-                    # isBuyable может не прийти из search API — достаточно all_zero
-                    coming_soon = all_zero and (is_buyable or not any("isBuyable" in o for o in offers))
+                    coming_soon = all_zero and (is_buyable or not has_buyable_info)
                 else:
                     available   = True
                     coming_soon = False
