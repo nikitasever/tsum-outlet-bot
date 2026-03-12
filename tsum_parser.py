@@ -208,6 +208,16 @@ class TsumOutletParser:
         all_zero   = all(int(o.get("quantity", 0)) == 0 for o in offers_list) if offers_list else False
         is_buyable = any(o.get("isBuyable", False) for o in offers_list) if offers_list else False
         coming_soon = all_zero and is_buyable
+        if offers_list:
+         has_qty_info = any("quantity" in o for o in offers_list)
+         if has_qty_info:
+             all_zero   = all(int(o.get("quantity", 0)) == 0 for o in offers_list)
+             is_buyable = any(o.get("isBuyable", False) for o in offers_list)
+             coming_soon = all_zero and is_buyable
+         else:
+             coming_soon = False
+     else:
+         coming_soon = False
         colors = []
         cf = item.get("color") or item.get("colors") or []
         if isinstance(cf, str):
@@ -262,11 +272,18 @@ class TsumOutletParser:
                 p = offers[0].get("price") or {}
                 price     = p.get("priceWithDiscount") or p.get("currentPrice")
                 old_price = p.get("originalPrice") or p.get("oldPrice")
+    
+                has_qty_info = any("quantity" in o for o in offers)
+                if has_qty_info:
                 has_stock  = any(int(o.get("quantity", 0)) > 0 for o in offers)
-                is_buyable = any(o.get("isBuyable", False) for o in offers)
                 all_zero   = all(int(o.get("quantity", 0)) == 0 for o in offers)
+                is_buyable = any(o.get("isBuyable", False) for o in offers)
                 available   = has_stock
                 coming_soon = all_zero and is_buyable
+            else:
+                # API не вернул quantity — товар считаем доступным
+                available   = True
+                coming_soon = False
             slug = item.get("slug") or str(item.get("id", ""))
             images = item.get("images") or []
             image_url = images[0].get("small") if images else None
