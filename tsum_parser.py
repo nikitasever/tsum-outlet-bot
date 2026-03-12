@@ -359,16 +359,36 @@ class TsumOutletParser:
         sizes       = []
         offers_list = item.get("offers") or item.get("sizes") or item.get("variants") or []
         for offer in offers_list:
-            if isinstance(offer, dict):
-                sv    = offer.get("size") or offer.get("value") or offer.get("label") or offer.get("name") or ""
-                avail = offer.get("available", offer.get("inStock", True))
-                qty   = offer.get("quantity") or offer.get("qty")
-                if sv:
-                    sizes.append({
-                        "size": str(sv),
-                        "available": bool(avail) and (qty is None or int(qty) > 0),
-                        "qty": int(qty) if qty else None,
-                    })
+            if not isinstance(offer, dict):
+                continue
+            # Size can be a nested dict (TSUM API) or a plain string
+            size_raw = offer.get("size") or {}
+            if isinstance(size_raw, dict):
+                sv = (
+                    size_raw.get("russianSize") or
+                    size_raw.get("vendorSize") or
+                    size_raw.get("label") or
+                    str(size_raw.get("id", ""))
+                )
+            else:
+                sv = (
+                    str(size_raw) or
+                    offer.get("value") or
+                    offer.get("label") or
+                    offer.get("name") or
+                    ""
+                )
+            qty   = offer.get("quantity") or offer.get("qty")
+            qty   = int(qty) if qty is not None else None
+            avail = bool(offer.get("available", offer.get("inStock", True)))
+            if qty is not None:
+                avail = qty > 0
+            if sv:
+                sizes.append({
+                    "size":      sv.strip(),
+                    "available": avail,
+                    "qty":       qty,
+                })
         available   = any(s["available"] for s in sizes) if sizes else bool(item.get("available", item.get("inStock", True)))
         coming_soon = False
         if offers_list:
