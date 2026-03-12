@@ -216,7 +216,7 @@ class TsumOutletParser:
              coming_soon = all_zero and is_buyable
          else:
              coming_soon = False
-     else:
+         else:
          coming_soon = False
         colors = []
         cf = item.get("color") or item.get("colors") or []
