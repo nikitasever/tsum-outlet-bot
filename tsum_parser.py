@@ -116,6 +116,44 @@ class TsumOutletParser:
         logger.info(f"Catalog scan done: {len(all_items)} items collected")
         return all_items
 
+    async def scan_coming_soon_api(self) -> list:
+        """
+        Try multiple API strategies to find coming_soon items.
+        Strategy 1: filter availableSoon=true directly in search
+        Strategy 2: from full catalog scan, pick items where all offers quantity=0 + isBuyable=true
+        """
+        sess = await self._session_()
+        results = []
+
+        # Strategy 1: direct API filter
+        for payload in [
+            {"availableSoon": True, "limit": 100},
+            {"filter": {"availableSoon": True}, "limit": 100},
+            {"inStock": False, "isBuyable": True, "limit": 100},
+        ]:
+            try:
+                async with sess.post(
+                    f"{API_BASE}/v4/catalog/search",
+                    json=payload
+                ) as r:
+                    if r.status == 200:
+                        data  = await r.json(content_type=None)
+                        items = data.get("models") or []
+                        # Only keep items that are truly coming_soon
+                        normed = self._norm_models_list(items)
+                        found  = [p for p in normed if p.get("coming_soon")]
+                        if found:
+                            logger.info(f"Coming soon API strategy {payload}: found {len(found)} items")
+                            results.extend(found)
+                            break
+                        else:
+                            logger.info(f"Coming soon API strategy {payload}: {len(items)} items returned, 0 coming_soon")
+            except Exception as e:
+                logger.debug(f"Coming soon API strategy {payload} error: {e}")
+
+        logger.info(f"scan_coming_soon_api total: {len(results)} items")
+        return results
+
     async def get_coming_soon(self, category_url: str) -> list:
         """Parse HTML category page to find 'Ожидается поступление' block."""
         try:
