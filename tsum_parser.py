@@ -340,7 +340,7 @@ class TsumOutletParser:
 
         return urls
 
-
+    async def scan_coming_soon_api(self) -> list:
         """
         Try multiple API strategies to find coming_soon items.
         Strategy 1: filter availableSoon=true directly in search
