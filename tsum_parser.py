@@ -124,10 +124,17 @@ class TsumOutletParser:
                         price = self._price(str(offers.get("price", "")))
                         in_stock = "InStock" in str(offers.get("availability", ""))
                         return {
-                            "brand": brand_name or "—", "name": item.get("name", "—"),
-                            "article": item.get("sku"), "price": price, "old_price": None,
-                            "discount": None, "available": in_stock,
-                            "sizes": [], "colors": [], "condition": None, "url": url,
+                            "brand": brand_name or "—",
+                            "name": item.get("name", "—"),
+                            "article": item.get("sku"),
+                            "price": price,
+                            "old_price": None,
+                            "discount": None,
+                            "available": in_stock,
+                            "sizes": [],
+                            "colors": [],
+                            "condition": None,
+                            "url": url,
                             "coming_soon": False,
                         }
             except Exception:
@@ -152,12 +159,18 @@ class TsumOutletParser:
                 sizes.append({"size": sv, "available": avail, "qty": None})
         ct = soup.select_one(".outlet-condition, .product-condition, [data-condition]")
         return {
-            "brand": brand or "—", "name": name, "article": None,
-            "price": price, "old_price": old_price, "discount": discount,
+            "brand": brand or "—",
+            "name": name,
+            "article": None,
+            "price": price,
+            "old_price": old_price,
+            "discount": discount,
             "available": any(s["available"] for s in sizes) if sizes else True,
-            "sizes": sizes, "colors": [],
+            "sizes": sizes,
+            "colors": [],
             "condition": ct.get_text(strip=True) if ct else None,
-            "url": url, "coming_soon": False,
+            "url": url,
+            "coming_soon": False,
         }
 
     def _norm_product(self, data: dict, url: str) -> Optional[dict]:
@@ -173,12 +186,14 @@ class TsumOutletParser:
         elif isinstance(pd, (int, float)):
             price, old_price = pd, None
         else:
-            price = self._price(str(pd)); old_price = None
+            price = self._price(str(pd))
+            old_price = None
         price     = int(price)     if price     else None
         old_price = int(old_price) if old_price else None
         discount  = self._calc_discount(price, old_price) or (int(item.get("discount") or item.get("discountPercent") or 0) or None)
         sizes = []
-        for offer in (item.get("offers") or item.get("sizes") or item.get("variants") or []):
+        offers_list = item.get("offers") or item.get("sizes") or item.get("variants") or []
+        for offer in offers_list:
             if isinstance(offer, dict):
                 sv    = offer.get("size") or offer.get("value") or offer.get("label") or offer.get("name") or ""
                 avail = offer.get("available", offer.get("inStock", True))
@@ -187,9 +202,12 @@ class TsumOutletParser:
                     sizes.append({
                         "size": str(sv),
                         "available": bool(avail) and (qty is None or int(qty) > 0),
-                        "qty": int(qty) if qty else None
+                        "qty": int(qty) if qty else None,
                     })
         available = any(s["available"] for s in sizes) if sizes else bool(item.get("available", item.get("inStock", True)))
+        all_zero   = all(int(o.get("quantity", 0)) == 0 for o in offers_list) if offers_list else False
+        is_buyable = any(o.get("isBuyable", False) for o in offers_list) if offers_list else False
+        coming_soon = all_zero and is_buyable
         colors = []
         cf = item.get("color") or item.get("colors") or []
         if isinstance(cf, str):
@@ -197,16 +215,16 @@ class TsumOutletParser:
         elif isinstance(cf, list):
             colors = [c.get("name", c) if isinstance(c, dict) else str(c) for c in cf]
         condition = item.get("condition") or item.get("grade") or item.get("state")
-        offers_list = item.get("offers") or item.get("sizes") or item.get("variants") or []
-        all_zero    = all(int(o.get("quantity", 0)) == 0 for o in offers_list) if offers_list else False
-        is_buyable  = any(o.get("isBuyable", False) for o in offers_list) if offers_list else False
-        coming_soon = all_zero and is_buyable
         return {
             "brand": brand_name,
             "name": item.get("name") or item.get("title") or "—",
             "article": item.get("article") or item.get("sku") or item.get("vendorCode"),
-            "price": price, "old_price": old_price, "discount": discount,
-            "available": available, "sizes": sizes, "colors": colors,
+            "price": price,
+            "old_price": old_price,
+            "discount": discount,
+            "available": available,
+            "sizes": sizes,
+            "colors": colors,
             "condition": str(condition) if condition else None,
             "url": item.get("url") or url,
             "coming_soon": coming_soon,
@@ -238,20 +256,17 @@ class TsumOutletParser:
             brand = item.get("brand") or {}
             brand_name = brand.get("title") or brand.get("name") if isinstance(brand, dict) else str(brand or "—")
             offers = item.get("offers") or []
-            price, old_price, available, coming_soon = None, None, False, False
+            price, old_price = None, None
+            available, coming_soon = False, False
             if offers:
-               p = offers[0].get("price") or {}
-               price     = p.get("priceWithDiscount") or p.get("currentPrice")
-               old_price = p.get("originalPrice") or p.get("oldPrice")
-    
-               has_stock   = any(int(o.get("quantity", 0)) > 0 for o in offers)
-               is_buyable  = any(o.get("isBuyable", False) for o in offers)
-               all_zero    = all(int(o.get("quantity", 0)) == 0 for o in offers)
-    
-               available   = has_stock
-               coming_soon = all_zero and is_buyable  # нет остатков, но можно купить = ожидается
-               False
-                )
+                p = offers[0].get("price") or {}
+                price     = p.get("priceWithDiscount") or p.get("currentPrice")
+                old_price = p.get("originalPrice") or p.get("oldPrice")
+                has_stock  = any(int(o.get("quantity", 0)) > 0 for o in offers)
+                is_buyable = any(o.get("isBuyable", False) for o in offers)
+                all_zero   = all(int(o.get("quantity", 0)) == 0 for o in offers)
+                available   = has_stock
+                coming_soon = all_zero and is_buyable
             slug = item.get("slug") or str(item.get("id", ""))
             images = item.get("images") or []
             image_url = images[0].get("small") if images else None
@@ -263,7 +278,7 @@ class TsumOutletParser:
                 "image_url":   image_url,
                 "url":         f"https://outlet.tsum.ru/product/{slug}",
                 "available":   available,
-                "coming_soon": bool(coming_soon),
+                "coming_soon": coming_soon,
             })
         return out
 
@@ -281,7 +296,11 @@ class TsumOutletParser:
                 try:
                     nd = json.loads(nd_tag.string or "")
                     props = nd.get("props", {}).get("pageProps", {})
-                    items = props.get("products") or props.get("items") or props.get("catalog", {}).get("products") or []
+                    items = (
+                        props.get("products") or
+                        props.get("items") or
+                        props.get("catalog", {}).get("products") or []
+                    )
                     if items:
                         return self._norm_search_list(items)[:limit]
                 except Exception:
@@ -296,7 +315,14 @@ class TsumOutletParser:
                 if not href.startswith("http"):
                     href = BASE_URL + href
                 if name:
-                    results.append({"brand": brand or "—", "name": name, "price": price, "url": href, "available": True, "coming_soon": False})
+                    results.append({
+                        "brand": brand or "—",
+                        "name": name,
+                        "price": price,
+                        "url": href,
+                        "available": True,
+                        "coming_soon": False,
+                    })
             return results
         except Exception as e:
             logger.error(f"Search error: {e}")
