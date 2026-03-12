@@ -62,8 +62,12 @@ class TsumOutletParser:
         results = await self._api_search(query, limit)
         return results or await self._html_search(query, limit)
 
-    async def scan_full_catalog(self) -> list:
-        """Scan the full outlet catalog using concurrent requests."""
+    async def scan_full_catalog(self) -> tuple[list, int]:
+        """
+        Scan the full outlet catalog using concurrent requests.
+        Returns (items, api_total_count) where api_total_count is the
+        official totalCount reported by the TSUM API.
+        """
         sess = await self._session_()
         sem  = asyncio.Semaphore(SCAN_CONCURRENCY)
 
@@ -80,7 +84,7 @@ class TsumOutletParser:
                 first_items = data.get("models") or []
         except Exception as e:
             logger.error(f"Catalog scan page 1 failed: {e}")
-            return []
+            return [], 0
 
         logger.info(f"Catalog scan started: {total_items} items across {total_pages} pages "
                     f"(concurrency={SCAN_CONCURRENCY})")
@@ -113,8 +117,9 @@ class TsumOutletParser:
         for batch in results:
             all_items.extend(batch)
 
-        logger.info(f"Catalog scan done: {len(all_items)} items collected")
-        return all_items
+        fetched = len(all_items)
+        logger.info(f"Catalog scan done: fetched={fetched}, api_total={total_items}")
+        return all_items, total_items
 
     async def scan_coming_soon_api(self) -> list:
         """
