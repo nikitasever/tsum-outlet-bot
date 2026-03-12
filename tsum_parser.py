@@ -23,22 +23,17 @@ HEADERS = {
     "x-site-region": "RU",
 }
 
-CATEGORY_SLUGS = [
-    "women-odezhda",
-    "men-odezhda",
-    "women-obuv",
-    "men-obuv",
-    "women-sumki",
-    "men-sumki",
-    "aksessuary",
-    "yuvelirnye-ukrasheniya",
-    "remni",
-    "golovnye-ubory",
+COMING_SOON_URLS = [
+    f"{BASE_URL}/catalog/women-odezhda/",
+    f"{BASE_URL}/catalog/men-odezhda/",
+    f"{BASE_URL}/catalog/women-obuv/",
+    f"{BASE_URL}/catalog/men-obuv/",
+    f"{BASE_URL}/catalog/women-sumki/",
+    f"{BASE_URL}/catalog/aksessuary/",
 ]
 
-COMING_SOON_URLS = [
-    f"{BASE_URL}/catalog/{slug}/" for slug in CATEGORY_SLUGS
-]
+# Semaphore: how many parallel API requests at once
+SCAN_CONCURRENCY = 10
 
 
 class TsumOutletParser:
@@ -50,7 +45,7 @@ class TsumOutletParser:
             self._session = aiohttp.ClientSession(
                 headers=HEADERS,
                 timeout=aiohttp.ClientTimeout(total=30),
-                connector=aiohttp.TCPConnector(ssl=False),
+                connector=aiohttp.TCPConnector(ssl=False, limit=50),
             )
         return self._session
 
@@ -68,36 +63,69 @@ class TsumOutletParser:
         results = await self._api_search(query, limit)
         return results or await self._html_search(query, limit)
 
-    async def scan_category(self, category_slug: str, max_pages: int = 15) -> list:
-        """Scan full category via API with pagination."""
+    async def scan_full_catalog(self) -> list:
+        """
+        Scan the full outlet catalog using concurrent requests.
+        Step 1: fetch page 1 to learn total pageCount
+        Step 2: fetch all remaining pages in parallel (semaphore-limited)
+        """
         sess = await self._session_()
-        all_items = []
-        for page in range(1, max_pages + 1):
-            try:
-                async with sess.post(
-                    f"{API_BASE}/v4/catalog/search",
-                    json={"categorySlug": category_slug, "page": page, "limit": 40}
-                ) as r:
-                    if r.status != 200:
-                        break
-                    data = await r.json(content_type=None)
-                    items = data.get("models") or []
-                    if not items:
-                        break
-                    all_items.extend(self._norm_models_list(items))
-                    if len(items) < 40:
-                        break  # last page
-            except Exception as e:
-                logger.error(f"Scan category {category_slug} page {page}: {e}")
-                break
-            await asyncio.sleep(1)
-        logger.info(f"Scanned category '{category_slug}': {len(all_items)} items")
+        sem  = asyncio.Semaphore(SCAN_CONCURRENCY)
+
+        # ── Step 1: first page to get pageCount ──────────────────────────────
+        try:
+            async with sess.post(
+                f"{API_BASE}/v4/catalog/search",
+                json={"page": 1, "limit": 40}
+            ) as r:
+                data        = await r.json(content_type=None)
+                pagination  = data.get("pagination") or {}
+                total_pages = pagination.get("pageCount", 1)
+                total_items = pagination.get("totalCount", 0)
+                first_items = data.get("models") or []
+        except Exception as e:
+            logger.error(f"Catalog scan page 1 failed: {e}")
+            return []
+
+        logger.info(f"Catalog scan started: {total_items} items across {total_pages} pages "
+                    f"(concurrency={SCAN_CONCURRENCY})")
+
+        all_items = self._norm_models_list(first_items)
+
+        # ── Step 2: fetch remaining pages concurrently ────────────────────────
+        async def fetch_page(page: int) -> list:
+            async with sem:
+                for attempt in range(3):  # retry up to 3 times
+                    try:
+                        async with sess.post(
+                            f"{API_BASE}/v4/catalog/search",
+                            json={"page": page, "limit": 40}
+                        ) as r:
+                            if r.status == 429:  # rate limited
+                                await asyncio.sleep(2 ** attempt)
+                                continue
+                            if r.status != 200:
+                                return []
+                            d = await r.json(content_type=None)
+                            return self._norm_models_list(d.get("models") or [])
+                    except Exception as e:
+                        logger.debug(f"Page {page} attempt {attempt+1} error: {e}")
+                        await asyncio.sleep(1)
+                return []
+
+        tasks   = [fetch_page(p) for p in range(2, total_pages + 1)]
+        results = await asyncio.gather(*tasks)
+
+        for batch in results:
+            all_items.extend(batch)
+
+        logger.info(f"Catalog scan done: {len(all_items)} items collected")
         return all_items
 
     async def get_coming_soon(self, category_url: str) -> list:
         """Parse HTML category page to find 'Ожидается поступление' block."""
         try:
-            sess = await self._session_()
+            sess    = await self._session_()
             headers = {**HEADERS, "Accept": "text/html,application/xhtml+xml"}
             async with sess.get(category_url, headers=headers) as r:
                 if r.status != 200:
@@ -107,13 +135,12 @@ class TsumOutletParser:
 
             soup = BeautifulSoup(html, "html.parser")
 
-            # Find block with class containing 'availableSoon'
             coming_block = soup.find(
                 lambda tag: tag.name in ("div", "section") and
                 any("availableSoon" in (c or "") for c in tag.get("class", []))
             )
 
-            # DEBUG logging
+            # DEBUG
             logger.info(f"Coming soon {category_url}: html_len={len(html)}, block_found={coming_block is not None}")
             all_classes = set()
             for tag in soup.find_all("div", class_=True)[:100]:
@@ -132,7 +159,7 @@ class TsumOutletParser:
                 if not href.startswith("http"):
                     href = BASE_URL + href
 
-                img = card.select_one("img[src], img[data-src]")
+                img       = card.select_one("img[src], img[data-src]")
                 image_url = None
                 if img:
                     image_url = img.get("src") or img.get("data-src")
@@ -172,16 +199,15 @@ class TsumOutletParser:
         if not slug:
             return None
         sess = await self._session_()
-        endpoints_get = [
+        for endpoint in [
             f"{PRODUCT_URL}?slug={slug}",
             f"{API_BASE}/v4/product/{slug}",
             f"{API_BASE}/v4/catalog/products/{slug}",
-        ]
-        for endpoint in endpoints_get:
+        ]:
             try:
                 async with sess.get(endpoint) as r:
                     if r.status == 200:
-                        data = await r.json(content_type=None)
+                        data   = await r.json(content_type=None)
                         parsed = self._norm_product(data, url)
                         if parsed:
                             return parsed
@@ -190,7 +216,7 @@ class TsumOutletParser:
         try:
             async with sess.post(PRODUCT_URL, json={"slug": slug}) as r:
                 if r.status == 200:
-                    data = await r.json(content_type=None)
+                    data   = await r.json(content_type=None)
                     parsed = self._norm_product(data, url)
                     if parsed:
                         return parsed
@@ -220,7 +246,7 @@ class TsumOutletParser:
         if not tag:
             return None
         try:
-            nd = json.loads(tag.string or "")
+            nd    = json.loads(tag.string or "")
             props = nd.get("props", {}).get("pageProps", {})
             for key in ("product", "initialProduct", "item", "productData"):
                 p = props.get(key)
@@ -233,30 +259,22 @@ class TsumOutletParser:
     def _jsonld_product(self, soup, url):
         for tag in soup.find_all("script", type="application/ld+json"):
             try:
-                data = json.loads(tag.string or "")
+                data  = json.loads(tag.string or "")
                 items = data if isinstance(data, list) else [data]
                 for item in items:
                     if item.get("@type") == "Product":
-                        brand = item.get("brand") or {}
+                        brand      = item.get("brand") or {}
                         brand_name = brand.get("name") if isinstance(brand, dict) else str(brand)
-                        offers = item.get("offers") or {}
+                        offers     = item.get("offers") or {}
                         if isinstance(offers, list):
                             offers = offers[0] if offers else {}
-                        price = self._price(str(offers.get("price", "")))
+                        price    = self._price(str(offers.get("price", "")))
                         in_stock = "InStock" in str(offers.get("availability", ""))
                         return {
-                            "brand": brand_name or "—",
-                            "name": item.get("name", "—"),
-                            "article": item.get("sku"),
-                            "price": price,
-                            "old_price": None,
-                            "discount": None,
-                            "available": in_stock,
-                            "sizes": [],
-                            "colors": [],
-                            "condition": None,
-                            "url": url,
-                            "coming_soon": False,
+                            "brand": brand_name or "—", "name": item.get("name", "—"),
+                            "article": item.get("sku"), "price": price, "old_price": None,
+                            "discount": None, "available": in_stock, "sizes": [], "colors": [],
+                            "condition": None, "url": url, "coming_soon": False,
                         }
             except Exception:
                 continue
@@ -267,31 +285,23 @@ class TsumOutletParser:
         name  = self._txt(soup, ["h1.product-title", "h1", ".product__name", ".product-name"])
         if not name:
             return None
-        price_raw     = self._txt(soup, [".price-current", ".product-price__current", "[data-price]", ".price", ".outlet-price"])
-        old_price_raw = self._txt(soup, [".price-old", ".product-price__old", ".price--old", ".outlet-price--old"])
-        price     = self._price(price_raw)
-        old_price = self._price(old_price_raw)
-        discount  = self._calc_discount(price, old_price)
-        sizes = []
-        for el in soup.select(".size-picker__item, .size-selector__item, [data-size], .product-sizes__item, .size-btn"):
-            sv = el.get("data-size") or el.get_text(strip=True)
+        price     = self._price(self._txt(soup, [".price-current", ".product-price__current", ".price", ".outlet-price"]))
+        old_price = self._price(self._txt(soup, [".price-old", ".product-price__old", ".price--old"]))
+        sizes     = []
+        for el in soup.select(".size-picker__item, .size-selector__item, [data-size], .product-sizes__item"):
+            sv    = el.get("data-size") or el.get_text(strip=True)
             avail = not any(c in el.get("class", []) for c in ("unavailable", "disabled", "out-of-stock"))
             if sv:
                 sizes.append({"size": sv, "available": avail, "qty": None})
         ct = soup.select_one(".outlet-condition, .product-condition, [data-condition]")
         return {
-            "brand": brand or "—",
-            "name": name,
-            "article": None,
-            "price": price,
-            "old_price": old_price,
-            "discount": discount,
+            "brand": brand or "—", "name": name, "article": None,
+            "price": price, "old_price": old_price,
+            "discount": self._calc_discount(price, old_price),
             "available": any(s["available"] for s in sizes) if sizes else True,
-            "sizes": sizes,
-            "colors": [],
+            "sizes": sizes, "colors": [],
             "condition": ct.get_text(strip=True) if ct else None,
-            "url": url,
-            "coming_soon": False,
+            "url": url, "coming_soon": False,
         }
 
     # ── Normalization ────────────────────────────────────────────────────────
@@ -300,21 +310,21 @@ class TsumOutletParser:
         item = data.get("product") or data.get("item") or data.get("data") or data
         if not isinstance(item, dict) or not item.get("name"):
             return None
-        brand = item.get("brand") or {}
+        brand      = item.get("brand") or {}
         brand_name = brand.get("name") if isinstance(brand, dict) else str(brand or "—")
-        pd = item.get("price") or {}
+        pd         = item.get("price") or {}
         if isinstance(pd, dict):
             price     = pd.get("current") or pd.get("value") or pd.get("sale")
             old_price = pd.get("old") or pd.get("crossed") or pd.get("original")
         elif isinstance(pd, (int, float)):
             price, old_price = pd, None
         else:
-            price = self._price(str(pd))
+            price     = self._price(str(pd))
             old_price = None
         price     = int(price)     if price     else None
         old_price = int(old_price) if old_price else None
         discount  = self._calc_discount(price, old_price) or (int(item.get("discount") or item.get("discountPercent") or 0) or None)
-        sizes = []
+        sizes       = []
         offers_list = item.get("offers") or item.get("sizes") or item.get("variants") or []
         for offer in offers_list:
             if isinstance(offer, dict):
@@ -327,7 +337,7 @@ class TsumOutletParser:
                         "available": bool(avail) and (qty is None or int(qty) > 0),
                         "qty": int(qty) if qty else None,
                     })
-        available = any(s["available"] for s in sizes) if sizes else bool(item.get("available", item.get("inStock", True)))
+        available   = any(s["available"] for s in sizes) if sizes else bool(item.get("available", item.get("inStock", True)))
         coming_soon = False
         if offers_list:
             has_qty_info     = any("quantity" in o for o in offers_list)
@@ -337,37 +347,31 @@ class TsumOutletParser:
                 is_buyable  = any(o.get("isBuyable", False) for o in offers_list)
                 coming_soon = all_zero and (is_buyable or not has_buyable_info)
         colors = []
-        cf = item.get("color") or item.get("colors") or []
+        cf     = item.get("color") or item.get("colors") or []
         if isinstance(cf, str):
             colors = [cf]
         elif isinstance(cf, list):
             colors = [c.get("name", c) if isinstance(c, dict) else str(c) for c in cf]
         condition = item.get("condition") or item.get("grade") or item.get("state")
         return {
-            "brand":       brand_name,
-            "name":        item.get("name") or item.get("title") or "—",
-            "article":     item.get("article") or item.get("sku") or item.get("vendorCode"),
-            "price":       price,
-            "old_price":   old_price,
-            "discount":    discount,
-            "available":   available,
-            "sizes":       sizes,
-            "colors":      colors,
-            "condition":   str(condition) if condition else None,
-            "url":         item.get("url") or url,
-            "coming_soon": coming_soon,
+            "brand": brand_name, "name": item.get("name") or item.get("title") or "—",
+            "article": item.get("article") or item.get("sku") or item.get("vendorCode"),
+            "price": price, "old_price": old_price, "discount": discount,
+            "available": available, "sizes": sizes, "colors": colors,
+            "condition": str(condition) if condition else None,
+            "url": item.get("url") or url, "coming_soon": coming_soon,
         }
 
     def _norm_models_list(self, items: list) -> list:
         out = []
         for item in items:
-            brand = item.get("brand") or {}
+            brand      = item.get("brand") or {}
             brand_name = brand.get("title") or brand.get("name") if isinstance(brand, dict) else str(brand or "—")
-            offers = item.get("offers") or []
-            price, old_price = None, None
-            available, coming_soon = True, False
+            offers     = item.get("offers") or []
+            price, old_price            = None, None
+            available, coming_soon      = True, False
             if offers:
-                p = offers[0].get("price") or {}
+                p         = offers[0].get("price") or {}
                 price     = p.get("priceWithDiscount") or p.get("currentPrice")
                 old_price = p.get("originalPrice") or p.get("oldPrice")
                 has_qty_info     = any("quantity" in o for o in offers)
@@ -378,11 +382,8 @@ class TsumOutletParser:
                     is_buyable  = any(o.get("isBuyable", False) for o in offers)
                     available   = has_stock
                     coming_soon = all_zero and (is_buyable or not has_buyable_info)
-                else:
-                    available   = True
-                    coming_soon = False
-            slug = item.get("slug") or str(item.get("id", ""))
-            images = item.get("images") or []
+            slug      = item.get("slug") or str(item.get("id", ""))
+            images    = item.get("images") or []
             image_url = images[0].get("small") if images else None
             out.append({
                 "brand":       brand_name or "—",
@@ -406,7 +407,7 @@ class TsumOutletParser:
                 json={"q": query}
             ) as r:
                 if r.status == 200:
-                    data = await r.json(content_type=None)
+                    data  = await r.json(content_type=None)
                     items = data.get("models") or []
                     if items:
                         return self._norm_models_list(items[:limit])
@@ -417,20 +418,19 @@ class TsumOutletParser:
     async def _html_search(self, query: str, limit: int) -> list:
         try:
             sess = await self._session_()
-            url = f"{BASE_URL}/catalog/search/?q={query}"
+            url  = f"{BASE_URL}/catalog/search/?q={query}"
             async with sess.get(url) as r:
                 if r.status != 200:
                     return []
                 html = await r.text()
-            soup = BeautifulSoup(html, "html.parser")
+            soup   = BeautifulSoup(html, "html.parser")
             nd_tag = soup.find("script", id="__NEXT_DATA__")
             if nd_tag:
                 try:
-                    nd = json.loads(nd_tag.string or "")
+                    nd    = json.loads(nd_tag.string or "")
                     props = nd.get("props", {}).get("pageProps", {})
                     items = (
-                        props.get("products") or
-                        props.get("items") or
+                        props.get("products") or props.get("items") or
                         props.get("catalog", {}).get("products") or []
                     )
                     if items:
@@ -438,8 +438,7 @@ class TsumOutletParser:
                 except Exception:
                     pass
             results = []
-            for card in soup.select(".product-card, .catalog-item, .item-card, [data-product]")[:limit]:
-                brand = self._txt(card, [".brand", ".product-brand"])
+            for card in soup.select(".product-card, .catalog-item, [data-product]")[:limit]:
                 name  = self._txt(card, [".product-name", ".title", "h2", "h3"])
                 price = self._price(self._txt(card, [".price", ".product-price"]))
                 a_tag = card.find("a")
@@ -448,7 +447,8 @@ class TsumOutletParser:
                     href = BASE_URL + href
                 if name:
                     results.append({
-                        "brand": brand or "—", "name": name, "price": price,
+                        "brand": self._txt(card, [".brand"]) or "—",
+                        "name": name, "price": price,
                         "url": href, "available": True, "coming_soon": False,
                     })
             return results
@@ -459,19 +459,16 @@ class TsumOutletParser:
     def _norm_search_list(self, items: list) -> list:
         out = []
         for item in items:
-            brand = item.get("brand") or {}
+            brand      = item.get("brand") or {}
             brand_name = brand.get("name") if isinstance(brand, dict) else str(brand or "—")
-            pd = item.get("price") or {}
-            price = pd.get("current") if isinstance(pd, dict) else pd
-            slug = item.get("slug") or item.get("url") or item.get("id", "")
-            url  = slug if str(slug).startswith("http") else f"{BASE_URL}/product/{slug}"
+            pd         = item.get("price") or {}
+            price      = pd.get("current") if isinstance(pd, dict) else pd
+            slug       = item.get("slug") or item.get("url") or item.get("id", "")
+            url        = slug if str(slug).startswith("http") else f"{BASE_URL}/product/{slug}"
             out.append({
-                "brand": brand_name,
-                "name": item.get("name") or item.get("title") or "—",
+                "brand": brand_name, "name": item.get("name") or item.get("title") or "—",
                 "price": int(price) if price else None,
-                "url": url,
-                "available": True,
-                "coming_soon": False,
+                "url": url, "available": True, "coming_soon": False,
             })
         return out
 
