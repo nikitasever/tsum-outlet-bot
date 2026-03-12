@@ -9,8 +9,6 @@ logger = logging.getLogger(__name__)
 
 BASE_URL    = "https://outlet.tsum.ru"
 API_BASE    = "https://api.tsum.ru"
-SEARCH_URL  = f"{API_BASE}/catalog/filter"
-SUGGEST_URL = f"{API_BASE}/catalog/search/suggestion"
 PRODUCT_URL = f"{API_BASE}/v4/catalog/product"
 
 HEADERS = {
@@ -65,7 +63,6 @@ class TsumOutletParser:
                             return parsed
             except Exception as e:
                 logger.debug(f"API GET error {endpoint}: {e}")
-
         try:
             async with sess.post(PRODUCT_URL, json={"slug": slug}) as r:
                 if r.status == 200:
@@ -205,19 +202,18 @@ class TsumOutletParser:
                         "qty": int(qty) if qty else None,
                     })
         available = any(s["available"] for s in sizes) if sizes else bool(item.get("available", item.get("inStock", True)))
-        all_zero   = all(int(o.get("quantity", 0)) == 0 for o in offers_list) if offers_list else False
-        is_buyable = any(o.get("isBuyable", False) for o in offers_list) if offers_list else False
-        coming_soon = all_zero and is_buyable
+        # coming_soon: есть офферы, все quantity=0, но isBuyable=True
+        # Если quantity вообще не передаётся — не считаем coming_soon
         if offers_list:
-         has_qty_info = any("quantity" in o for o in offers_list)
-         if has_qty_info:
-             all_zero   = all(int(o.get("quantity", 0)) == 0 for o in offers_list)
-             is_buyable = any(o.get("isBuyable", False) for o in offers_list)
-             coming_soon = all_zero and is_buyable
-         else:
-             coming_soon = False
-         else:
-         coming_soon = False
+            has_qty_info = any("quantity" in o for o in offers_list)
+            if has_qty_info:
+                all_zero   = all(int(o.get("quantity", 0)) == 0 for o in offers_list)
+                is_buyable = any(o.get("isBuyable", False) for o in offers_list)
+                coming_soon = all_zero and is_buyable
+            else:
+                coming_soon = False
+        else:
+            coming_soon = False
         colors = []
         cf = item.get("color") or item.get("colors") or []
         if isinstance(cf, str):
@@ -267,23 +263,21 @@ class TsumOutletParser:
             brand_name = brand.get("title") or brand.get("name") if isinstance(brand, dict) else str(brand or "—")
             offers = item.get("offers") or []
             price, old_price = None, None
-            available, coming_soon = False, False
+            available, coming_soon = True, False
             if offers:
                 p = offers[0].get("price") or {}
                 price     = p.get("priceWithDiscount") or p.get("currentPrice")
                 old_price = p.get("originalPrice") or p.get("oldPrice")
-    
                 has_qty_info = any("quantity" in o for o in offers)
                 if has_qty_info:
-                has_stock  = any(int(o.get("quantity", 0)) > 0 for o in offers)
-                all_zero   = all(int(o.get("quantity", 0)) == 0 for o in offers)
-                is_buyable = any(o.get("isBuyable", False) for o in offers)
-                available   = has_stock
-                coming_soon = all_zero and is_buyable
-            else:
-                # API не вернул quantity — товар считаем доступным
-                available   = True
-                coming_soon = False
+                    has_stock  = any(int(o.get("quantity", 0)) > 0 for o in offers)
+                    all_zero   = all(int(o.get("quantity", 0)) == 0 for o in offers)
+                    is_buyable = any(o.get("isBuyable", False) for o in offers)
+                    available   = has_stock
+                    coming_soon = all_zero and is_buyable
+                else:
+                    available   = True
+                    coming_soon = False
             slug = item.get("slug") or str(item.get("id", ""))
             images = item.get("images") or []
             image_url = images[0].get("small") if images else None
