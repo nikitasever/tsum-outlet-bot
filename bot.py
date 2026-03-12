@@ -49,7 +49,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Просто скопируй ссылку с outlet.tsum.ru и отправь мне 🔗"
     )
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🛍 Открыть каталог", web_app=WebAppInfo(url="https://nikitasever.github.io/tsum-outlet-miniapp"))
+        InlineKeyboardButton(
+            "🛍 Открыть каталог",
+            web_app=WebAppInfo(url="https://nikitasever.github.io/tsum-outlet-miniapp")
+        )
     ]])
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
@@ -100,7 +103,6 @@ async def send_search_page(message, results, query, search_key, page=0):
     page_items = results[start:end]
     total_pages = (len(results) - 1) // page_size + 1
 
-    # Альбом с фото
     media = [InputMediaPhoto(media=item["image_url"]) for item in page_items if item.get("image_url")]
     photo_ids = []
     if media:
@@ -113,7 +115,6 @@ async def send_search_page(message, results, query, search_key, page=0):
     if search_key in _search_store:
         _search_store[search_key]["photo_ids"] = photo_ids
 
-    # Текст со списком
     text = f"🛍 *«{query}»* — стр. {page+1}/{total_pages} ({len(results)} товаров)\n\n"
     keyboard = []
     for i, item in enumerate(page_items, start + 1):
@@ -258,6 +259,8 @@ def format_product(p: dict) -> str:
     if p.get("condition"):
         lines.append(f"📋 Состояние: _{p['condition']}_")
     lines.append("")
+
+    # Price
     if p.get("price"):
         price_str = f"{p['price']:,}".replace(",", " ")
         old_price = p.get("old_price")
@@ -269,29 +272,32 @@ def format_product(p: dict) -> str:
         else:
             disc_tag = f" (−{discount}% от оригинала)" if discount else ""
             lines.append(f"💰 *{price_str} ₽*{disc_tag}")
+
     if p.get("article"):
         lines.append(f"🔖 Артикул: `{p['article']}`")
     lines.append("")
+
+    # Availability & sizes
     sizes = p.get("sizes", [])
     if sizes:
-        lines.append("📐 *Наличие по размерам:*")
-        avail_s   = [s for s in sizes if s.get("available")]
-        unavail_s = [s for s in sizes if not s.get("available")]
-        if avail_s:
-            parts = []
-            for s in avail_s:
-                tag = f"`{s['size']}`"
-                if s.get("qty") is not None:
-                    tag += f"({s['qty']} шт.)"
-                parts.append(tag)
-            lines.append(f"🟢 В наличии: {'  '.join(parts)}")
-        if unavail_s:
-            unavail_list = "  ".join(f"`{s['size']}`" for s in unavail_s)
-            lines.append(f"🔴 Нет: {unavail_list}")
-        lines.append(f"\n📊 Доступно: {len(avail_s)}/{len(sizes)} размеров")
+        avail_sizes   = [s["size"] for s in sizes if s.get("available")]
+        unavail_sizes = [s["size"] for s in sizes if not s.get("available")]
+
+        if not avail_sizes:
+            # No sizes available at all
+            lines.append("🔴 Нет в наличии")
+        elif not unavail_sizes:
+            # All sizes available — don't list them, just say "all good"
+            lines.append("🟢 В наличии — все размеры есть")
+        else:
+            # Some sizes missing
+            unavail_str = "  ".join(f"`{s}`" for s in unavail_sizes)
+            lines.append(f"🟢 В наличии")
+            lines.append(f"🔴 Нет размеров: {unavail_str}")
     else:
         status = "🟢 В наличии" if p.get("available") else "🔴 Нет в наличии"
         lines.append(status)
+
     if p.get("colors"):
         lines.append(f"\n🎨 Цвет: {', '.join(p['colors'])}")
     if p.get("url"):
@@ -436,6 +442,10 @@ def main():
 
     logger.info("🤖 ЦУМ Аутлет бот запущен")
     app.run_polling(drop_pending_updates=True)
+
+
+if __name__ == "__main__":
+    main()
 
 
 if __name__ == "__main__":
