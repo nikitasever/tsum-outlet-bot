@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from tsum_parser import TsumOutletParser, CATEGORY_SLUGS, COMING_SOON_URLS
+from tsum_parser import TsumOutletParser, COMING_SOON_URLS
 from tracker import ProductTracker
 
 logger = logging.getLogger(__name__)
@@ -58,12 +58,10 @@ def save_events(data):
 
 
 def _upsert_product(catalog: dict, sold: list, p: dict, now: int):
-    """Save product to catalog, detect sales."""
     url = p.get("url")
     if not url:
         return
     prev = catalog.get(url)
-    # Detect sale: was available, now not available and not coming_soon
     if prev and prev["product"].get("available") and not p.get("available") and not p.get("coming_soon"):
         sold.append({
             "product":    p,
@@ -85,44 +83,46 @@ async def scan_all_categories():
     scanner = TsumOutletParser()
     while True:
         try:
+            t_start = time.time()
             logger.info("🔍 Начало сканирования каталога...")
+
             catalog = load_catalog()
             sold    = load_sold()
             now     = int(time.time())
 
-            # Full category scan with pagination
-            for slug in CATEGORY_SLUGS:
-                try:
-                    results = await scanner.scan_category(slug, max_pages=15)
-                    for p in results:
-                        _upsert_product(catalog, sold, p, now)
-                    # Save after each category to avoid data loss
-                    save_catalog(catalog)
-                    save_sold(sold[-1000:])
-                except Exception as e:
-                    logger.error(f"Category scan error '{slug}': {e}")
-                await asyncio.sleep(3)
-
-            # HTML-based coming_soon scan
-            for cat_url in COMING_SOON_URLS:
-                try:
-                    coming = await scanner.get_coming_soon(cat_url)
-                    for p in coming:
-                        _upsert_product(catalog, sold, p, now)
-                    if coming:
-                        save_catalog(catalog)
-                except Exception as e:
-                    logger.error(f"Coming soon scan error {cat_url}: {e}")
-                await asyncio.sleep(3)
+            # Full concurrent catalog scan — gets ALL ~45k items
+            results = await scanner.scan_full_catalog()
+            for p in results:
+                _upsert_product(catalog, sold, p, now)
 
             save_catalog(catalog)
-            save_sold(sold[-1000:])
-            logger.info(f"✅ Сканирование завершено. Товаров в базе: {len(catalog)}")
+            save_sold(sold[-2000:])
+            elapsed = round(time.time() - t_start, 1)
+            logger.info(f"Catalog scan done in {elapsed}s. DB size: {len(catalog)}")
+
+            # HTML coming_soon scan (parallel across all category URLs)
+            async def scan_coming(url):
+                try:
+                    coming = await scanner.get_coming_soon(url)
+                    return coming
+                except Exception as e:
+                    logger.error(f"Coming soon error {url}: {e}")
+                    return []
+
+            coming_results = await asyncio.gather(*[scan_coming(u) for u in COMING_SOON_URLS])
+            for coming in coming_results:
+                for p in coming:
+                    _upsert_product(catalog, sold, p, now)
+
+            save_catalog(catalog)
+            save_sold(sold[-2000:])
+            logger.info(f"✅ Полное сканирование завершено за {round(time.time() - t_start, 1)}s. "
+                        f"Товаров в базе: {len(catalog)}")
 
         except Exception as e:
             logger.error(f"Scanner error: {e}")
 
-        await asyncio.sleep(2 * 60 * 60)  # next full scan in 2 hours
+        await asyncio.sleep(2 * 60 * 60)  # repeat every 2 hours
 
 
 # ── App lifecycle ────────────────────────────────────────────────────────────
@@ -203,7 +203,7 @@ async def catalog_save(products: list[dict]):
     for p in products:
         _upsert_product(catalog, sold, p, now)
     save_catalog(catalog)
-    save_sold(sold[-1000:])
+    save_sold(sold[-2000:])
     return {"saved": len(products)}
 
 
