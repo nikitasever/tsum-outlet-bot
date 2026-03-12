@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 CATALOG_FILE = "catalog_store.json"
 SOLD_FILE    = "sold_store.json"
 EVENTS_FILE  = "events_store.json"
+META_FILE    = "scan_meta.json"
 
 
 # ── Storage helpers ──────────────────────────────────────────────────────────
@@ -54,6 +55,18 @@ def load_events():
 
 def save_events(data):
     with open(EVENTS_FILE, "w") as f:
+        json.dump(data, f, ensure_ascii=False)
+
+
+def load_meta():
+    if os.path.exists(META_FILE):
+        with open(META_FILE) as f:
+            return json.load(f)
+    return {}
+
+
+def save_meta(data):
+    with open(META_FILE, "w") as f:
         json.dump(data, f, ensure_ascii=False)
 
 
@@ -121,7 +134,7 @@ async def scan_all_categories():
             now = int(time.time())
 
             # Full catalog scan — picks up coming_soon via quantity=0 + isBuyable=true
-            results = await scanner.scan_full_catalog()
+            results, api_total = await scanner.scan_full_catalog()
             coming_in_catalog = 0
             for p in results:
                 _upsert_product(catalog, sold, p, now)
@@ -162,9 +175,22 @@ async def scan_all_categories():
 
             total_coming = len([v for v in catalog.values() if v["product"].get("coming_soon")])
             sold_today_count = len([s for s in sold if s.get("ts", 0) > now - 86400])
+
+            meta = {
+                "last_scan_ts":      now,
+                "last_scan_dur_s":   round(time.time() - t_start, 1),
+                "api_total":         api_total,        # official TSUM count
+                "catalog_db":        len(catalog),     # our DB (accumulated)
+                "fetched_this_scan": len(results),     # actually fetched this run
+                "coming_soon":       total_coming,
+                "sold_24h":          sold_today_count,
+            }
+            save_meta(meta)
+
             logger.info(
-                f"✅ Сканирование завершено за {round(time.time()-t_start, 1)}s. "
-                f"Товаров: {len(catalog)}, ожидается: {total_coming}, "
+                f"✅ Сканирование завершено за {meta['last_scan_dur_s']}s. "
+                f"API: {api_total}, получено: {len(results)}, "
+                f"в базе: {len(catalog)}, ожидается: {total_coming}, "
                 f"продаж сегодня: {sold_today_count}"
             )
 
@@ -328,9 +354,10 @@ async def coming_soon():
 
 @app.get("/api/debug")
 async def debug():
-    """Quick health check — shows catalog state without loading all data."""
+    """Health check — shows catalog state and last scan metadata."""
     catalog = load_catalog()
     sold = load_sold()
+    meta = load_meta()
     now = int(time.time())
 
     total = len(catalog)
@@ -338,22 +365,30 @@ async def debug():
     coming = sum(1 for v in catalog.values() if v["product"].get("coming_soon"))
     with_sizes = sum(1 for v in catalog.values() if v["product"].get("sizes"))
     sold_24h = len([s for s in sold if s.get("ts", 0) > now - 86400])
-    sold_size = len([s for s in sold if s.get("type") == "size"])
-    sold_product = len([s for s in sold if s.get("type") == "product"])
 
-    # Sample 3 coming_soon items for inspection
+    last_scan_ago = None
+    if meta.get("last_scan_ts"):
+        last_scan_ago = round((now - meta["last_scan_ts"]) / 60, 1)
+
     sample_coming = [
         v["product"] for v in catalog.values()
         if v["product"].get("coming_soon")
     ][:3]
 
     return {
-        "catalog_total":     total,
-        "available":         available,
-        "coming_soon":       coming,
-        "with_sizes":        with_sizes,
-        "sold_24h":          sold_24h,
-        "sold_by_product":   sold_product,
-        "sold_by_size":      sold_size,
+        # Точные цифры
+        "api_total":          meta.get("api_total", "не скачано"),
+        "fetched_last_scan":  meta.get("fetched_this_scan", "—"),
+        "catalog_db":         total,
+        "available":          available,
+        "coming_soon":        coming,
+        "with_sizes":         with_sizes,
+        # Продажи
+        "sold_24h":           sold_24h,
+        "sold_by_product":    len([s for s in sold if s.get("type") == "product"]),
+        "sold_by_size":       len([s for s in sold if s.get("type") == "size"]),
+        # Скан
+        "last_scan_ago_min":  last_scan_ago,
+        "last_scan_dur_s":    meta.get("last_scan_dur_s"),
         "sample_coming_soon": sample_coming,
     }
