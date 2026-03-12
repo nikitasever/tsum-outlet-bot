@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -22,6 +23,23 @@ HEADERS = {
     "x-site-region": "RU",
 }
 
+CATEGORY_SLUGS = [
+    "women-odezhda",
+    "men-odezhda",
+    "women-obuv",
+    "men-obuv",
+    "women-sumki",
+    "men-sumki",
+    "aksessuary",
+    "yuvelirnye-ukrasheniya",
+    "remni",
+    "golovnye-ubory",
+]
+
+COMING_SOON_URLS = [
+    f"{BASE_URL}/catalog/{slug}/" for slug in CATEGORY_SLUGS
+]
+
 
 class TsumOutletParser:
     def __init__(self):
@@ -31,7 +49,7 @@ class TsumOutletParser:
         if not self._session or self._session.closed:
             self._session = aiohttp.ClientSession(
                 headers=HEADERS,
-                timeout=aiohttp.ClientTimeout(total=25),
+                timeout=aiohttp.ClientTimeout(total=30),
                 connector=aiohttp.TCPConnector(ssl=False),
             )
         return self._session
@@ -49,6 +67,32 @@ class TsumOutletParser:
     async def search_products(self, query: str, limit: int = 8) -> list:
         results = await self._api_search(query, limit)
         return results or await self._html_search(query, limit)
+
+    async def scan_category(self, category_slug: str, max_pages: int = 15) -> list:
+        """Scan full category via API with pagination."""
+        sess = await self._session_()
+        all_items = []
+        for page in range(1, max_pages + 1):
+            try:
+                async with sess.post(
+                    f"{API_BASE}/v4/catalog/search",
+                    json={"categorySlug": category_slug, "page": page, "limit": 40}
+                ) as r:
+                    if r.status != 200:
+                        break
+                    data = await r.json(content_type=None)
+                    items = data.get("models") or []
+                    if not items:
+                        break
+                    all_items.extend(self._norm_models_list(items))
+                    if len(items) < 40:
+                        break  # last page
+            except Exception as e:
+                logger.error(f"Scan category {category_slug} page {page}: {e}")
+                break
+            await asyncio.sleep(1)
+        logger.info(f"Scanned category '{category_slug}': {len(all_items)} items")
+        return all_items
 
     async def get_coming_soon(self, category_url: str) -> list:
         """Parse HTML category page to find 'Ожидается поступление' block."""
@@ -69,7 +113,7 @@ class TsumOutletParser:
                 any("availableSoon" in (c or "") for c in tag.get("class", []))
             )
 
-            # DEBUG: log what we found
+            # DEBUG logging
             logger.info(f"Coming soon {category_url}: html_len={len(html)}, block_found={coming_block is not None}")
             all_classes = set()
             for tag in soup.find_all("div", class_=True)[:100]:
@@ -95,14 +139,14 @@ class TsumOutletParser:
                     if image_url and ("placeholder" in image_url or len(image_url) < 20):
                         image_url = None
 
-                brand_el    = card.select_one("[class*='brand'], [class*='Brand']")
-                name_el     = card.select_one("[class*='name'], [class*='Name'], [class*='title'], [class*='Title']")
-                price_el    = card.select_one("[class*='price'], [class*='Price']")
+                brand_el     = card.select_one("[class*='brand'], [class*='Brand']")
+                name_el      = card.select_one("[class*='name'], [class*='Name'], [class*='title'], [class*='Title']")
+                price_el     = card.select_one("[class*='price'], [class*='Price']")
                 old_price_el = card.select_one("[class*='old'], [class*='Old'], [class*='crossed'], [class*='original']")
 
-                brand     = brand_el.get_text(strip=True)    if brand_el    else "—"
-                name      = name_el.get_text(strip=True)     if name_el     else "—"
-                price     = self._price(price_el.get_text()  if price_el    else "")
+                brand     = brand_el.get_text(strip=True)       if brand_el     else "—"
+                name      = name_el.get_text(strip=True)        if name_el      else "—"
+                price     = self._price(price_el.get_text()     if price_el     else "")
                 old_price = self._price(old_price_el.get_text() if old_price_el else "")
 
                 if href and href != BASE_URL:
@@ -116,6 +160,7 @@ class TsumOutletParser:
                         "available":   False,
                         "coming_soon": True,
                     })
+            logger.info(f"Coming soon {category_url}: found {len(results)} items")
             return results
         except Exception as e:
             logger.error(f"Coming soon parse error {category_url}: {e}")
@@ -288,8 +333,8 @@ class TsumOutletParser:
             has_qty_info     = any("quantity" in o for o in offers_list)
             has_buyable_info = any("isBuyable" in o for o in offers_list)
             if has_qty_info:
-                all_zero   = all(int(o.get("quantity", 0)) == 0 for o in offers_list)
-                is_buyable = any(o.get("isBuyable", False) for o in offers_list)
+                all_zero    = all(int(o.get("quantity", 0)) == 0 for o in offers_list)
+                is_buyable  = any(o.get("isBuyable", False) for o in offers_list)
                 coming_soon = all_zero and (is_buyable or not has_buyable_info)
         colors = []
         cf = item.get("color") or item.get("colors") or []
@@ -328,9 +373,9 @@ class TsumOutletParser:
                 has_qty_info     = any("quantity" in o for o in offers)
                 has_buyable_info = any("isBuyable" in o for o in offers)
                 if has_qty_info:
-                    has_stock  = any(int(o.get("quantity", 0)) > 0 for o in offers)
-                    all_zero   = all(int(o.get("quantity", 0)) == 0 for o in offers)
-                    is_buyable = any(o.get("isBuyable", False) for o in offers)
+                    has_stock   = any(int(o.get("quantity", 0)) > 0 for o in offers)
+                    all_zero    = all(int(o.get("quantity", 0)) == 0 for o in offers)
+                    is_buyable  = any(o.get("isBuyable", False) for o in offers)
                     available   = has_stock
                     coming_soon = all_zero and (is_buyable or not has_buyable_info)
                 else:
