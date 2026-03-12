@@ -148,7 +148,7 @@ async def scan_all_categories():
         except Exception as e:
             logger.error(f"Scanner error: {e}")
 
-        await asyncio.sleep(2 * 60 * 60)
+        await asyncio.sleep(30 * 60)  # scan every 30 minutes
 
 
 # ── App lifecycle ────────────────────────────────────────────────────────────
@@ -301,3 +301,4 @@ async def coming_soon():
     catalog = load_catalog()
     items = [v["product"] for v in catalog.values() if v["product"].get("coming_soon")]
     return {"count": len(items), "items": items}
+
