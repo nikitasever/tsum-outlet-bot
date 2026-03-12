@@ -72,6 +72,14 @@ def save_meta(data):
 
 # ── Upsert with sold detection ───────────────────────────────────────────────
 
+def _total_qty(product: dict) -> int:
+    """Sum of all size quantities for a product."""
+    sizes = product.get("sizes") or []
+    if sizes and any(s.get("qty") is not None for s in sizes):
+        return sum(s.get("qty") or 0 for s in sizes)
+    return -1  # unknown
+
+
 def _upsert_product(catalog, sold, p, now):
     url = p.get("url")
     if not url:
@@ -110,8 +118,18 @@ def _upsert_product(catalog, sold, p, now):
                         "size": size_label,
                     })
 
+        # Track qty velocity — how many units sold since last scan
+        prev_qty = _total_qty(prev_product)
+        curr_qty = _total_qty(p)
+        if prev_qty >= 0 and curr_qty >= 0 and curr_qty < prev_qty:
+            units_sold = prev_qty - curr_qty
+            qty_history = prev.get("qty_history") or []
+            qty_history.append({"ts": now, "sold": units_sold, "remaining": curr_qty})
+            qty_history = qty_history[-48:]  # keep 48 data points (~24h at 30min scans)
+            prev["qty_history"] = qty_history
+
     if url not in catalog:
-        catalog[url] = {"product": p, "history": []}
+        catalog[url] = {"product": p, "history": [], "qty_history": []}
 
     catalog[url]["product"] = p
     history = catalog[url]["history"]
@@ -350,6 +368,54 @@ async def coming_soon():
     catalog = load_catalog()
     items = [v["product"] for v in catalog.values() if v["product"].get("coming_soon")]
     return {"count": len(items), "items": items}
+
+
+@app.get("/api/hot")
+async def hot_items(hours: int = 24, limit: int = 30):
+    """
+    Returns fastest-selling items based on qty drops between scans.
+    velocity = total units sold in last `hours` hours.
+    """
+    catalog = load_catalog()
+    now = int(time.time())
+    since = now - hours * 3600
+
+    results = []
+    for entry in catalog.values():
+        qty_history = entry.get("qty_history") or []
+        if not qty_history:
+            continue
+
+        # Sum units sold within the window
+        recent = [h for h in qty_history if h.get("ts", 0) >= since]
+        if not recent:
+            continue
+
+        total_sold = sum(h.get("sold", 0) for h in recent)
+        if total_sold <= 0:
+            continue
+
+        # Time span of the data we have
+        first_ts = recent[0]["ts"]
+        span_hours = max((now - first_ts) / 3600, 0.5)
+        velocity = round(total_sold / span_hours, 2)  # units per hour
+
+        remaining = qty_history[-1].get("remaining", None)
+
+        results.append({
+            "product":      entry["product"],
+            "total_sold":   total_sold,
+            "velocity":     velocity,   # units/hour
+            "remaining":    remaining,  # current stock
+            "data_points":  len(recent),
+        })
+
+    results.sort(key=lambda x: x["total_sold"], reverse=True)
+    return {
+        "hours":   hours,
+        "count":   len(results),
+        "items":   results[:limit],
+    }
 
 
 @app.get("/api/debug")
