@@ -197,7 +197,10 @@ class TsumOutletParser:
         elif isinstance(cf, list):
             colors = [c.get("name", c) if isinstance(c, dict) else str(c) for c in cf]
         condition = item.get("condition") or item.get("grade") or item.get("state")
-        coming_soon = bool(item.get("comingSoon") or item.get("isComingSoon") or False)
+        offers_list = item.get("offers") or item.get("sizes") or item.get("variants") or []
+        all_zero    = all(int(o.get("quantity", 0)) == 0 for o in offers_list) if offers_list else False
+        is_buyable  = any(o.get("isBuyable", False) for o in offers_list) if offers_list else False
+        coming_soon = all_zero and is_buyable
         return {
             "brand": brand_name,
             "name": item.get("name") or item.get("title") or "—",
@@ -237,15 +240,16 @@ class TsumOutletParser:
             offers = item.get("offers") or []
             price, old_price, available, coming_soon = None, None, False, False
             if offers:
-                p = offers[0].get("price") or {}
-                price     = p.get("priceWithDiscount") or p.get("currentPrice")
-                old_price = p.get("originalPrice") or p.get("oldPrice")
-                qty = offers[0].get("quantity")
-                available = qty is None or int(qty) > 0
-                coming_soon = (
-                    item.get("comingSoon") or
-                    item.get("isComingSoon") or
-                    offers[0].get("comingSoon") or
+               p = offers[0].get("price") or {}
+               price     = p.get("priceWithDiscount") or p.get("currentPrice")
+               old_price = p.get("originalPrice") or p.get("oldPrice")
+    
+               has_stock   = any(int(o.get("quantity", 0)) > 0 for o in offers)
+               is_buyable  = any(o.get("isBuyable", False) for o in offers)
+               all_zero    = all(int(o.get("quantity", 0)) == 0 for o in offers)
+    
+               available   = has_stock
+               coming_soon = all_zero and is_buyable  # нет остатков, но можно купить = ожидается
                     False
                 )
             slug = item.get("slug") or str(item.get("id", ""))
