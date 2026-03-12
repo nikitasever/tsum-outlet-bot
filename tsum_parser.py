@@ -57,8 +57,10 @@ class TsumOutletParser:
             headers = {**HEADERS, "Accept": "text/html,application/xhtml+xml"}
             async with sess.get(category_url, headers=headers) as r:
                 if r.status != 200:
+                    logger.info(f"Coming soon {category_url}: status={r.status}")
                     return []
                 html = await r.text()
+
             soup = BeautifulSoup(html, "html.parser")
 
             # Find block with class containing 'availableSoon'
@@ -66,6 +68,17 @@ class TsumOutletParser:
                 lambda tag: tag.name in ("div", "section") and
                 any("availableSoon" in (c or "") for c in tag.get("class", []))
             )
+
+            # DEBUG: log what we found
+            logger.info(f"Coming soon {category_url}: html_len={len(html)}, block_found={coming_block is not None}")
+            all_classes = set()
+            for tag in soup.find_all("div", class_=True)[:100]:
+                for c in tag.get("class", []):
+                    if any(w in c.lower() for w in ["soon", "available", "coming", "notify", "expect"]):
+                        all_classes.add(c)
+            if all_classes:
+                logger.info(f"Relevant classes on page: {all_classes}")
+
             if not coming_block:
                 return []
 
@@ -79,19 +92,17 @@ class TsumOutletParser:
                 image_url = None
                 if img:
                     image_url = img.get("src") or img.get("data-src")
-                    # Skip tiny placeholder images
                     if image_url and ("placeholder" in image_url or len(image_url) < 20):
                         image_url = None
 
-                # Try to find brand/name/price in card
-                brand_el = card.select_one("[class*='brand'], [class*='Brand']")
-                name_el  = card.select_one("[class*='name'], [class*='Name'], [class*='title'], [class*='Title']")
-                price_el = card.select_one("[class*='price'], [class*='Price']")
+                brand_el    = card.select_one("[class*='brand'], [class*='Brand']")
+                name_el     = card.select_one("[class*='name'], [class*='Name'], [class*='title'], [class*='Title']")
+                price_el    = card.select_one("[class*='price'], [class*='Price']")
                 old_price_el = card.select_one("[class*='old'], [class*='Old'], [class*='crossed'], [class*='original']")
 
-                brand = brand_el.get_text(strip=True) if brand_el else "—"
-                name  = name_el.get_text(strip=True) if name_el else "—"
-                price = self._price(price_el.get_text() if price_el else "")
+                brand     = brand_el.get_text(strip=True)    if brand_el    else "—"
+                name      = name_el.get_text(strip=True)     if name_el     else "—"
+                price     = self._price(price_el.get_text()  if price_el    else "")
                 old_price = self._price(old_price_el.get_text() if old_price_el else "")
 
                 if href and href != BASE_URL:
@@ -272,7 +283,6 @@ class TsumOutletParser:
                         "qty": int(qty) if qty else None,
                     })
         available = any(s["available"] for s in sizes) if sizes else bool(item.get("available", item.get("inStock", True)))
-        # coming_soon: all offers have quantity=0 and isBuyable=True
         coming_soon = False
         if offers_list:
             has_qty_info     = any("quantity" in o for o in offers_list)
@@ -289,17 +299,17 @@ class TsumOutletParser:
             colors = [c.get("name", c) if isinstance(c, dict) else str(c) for c in cf]
         condition = item.get("condition") or item.get("grade") or item.get("state")
         return {
-            "brand":     brand_name,
-            "name":      item.get("name") or item.get("title") or "—",
-            "article":   item.get("article") or item.get("sku") or item.get("vendorCode"),
-            "price":     price,
-            "old_price": old_price,
-            "discount":  discount,
-            "available": available,
-            "sizes":     sizes,
-            "colors":    colors,
-            "condition": str(condition) if condition else None,
-            "url":       item.get("url") or url,
+            "brand":       brand_name,
+            "name":        item.get("name") or item.get("title") or "—",
+            "article":     item.get("article") or item.get("sku") or item.get("vendorCode"),
+            "price":       price,
+            "old_price":   old_price,
+            "discount":    discount,
+            "available":   available,
+            "sizes":       sizes,
+            "colors":      colors,
+            "condition":   str(condition) if condition else None,
+            "url":         item.get("url") or url,
             "coming_soon": coming_soon,
         }
 
