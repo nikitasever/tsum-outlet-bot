@@ -344,73 +344,71 @@ class TsumOutletParser:
 
     async def scan_coming_soon_api(self) -> list:
         """
-        Try multiple API strategies to find coming_soon items.
-        Logs item/offer structure to help identify correct fields.
+        Fetch coming_soon items from TSUM API with full pagination.
+        Tries several filter strategies, uses the first that works.
         """
         sess = await self._session_()
         results = []
 
+        # Try strategies in order — stop at first that returns items
         strategies = [
-            {"availableSoon": True, "limit": 100},
-            {"filter": {"availableSoon": True}, "limit": 100},
-            {"isAvailableSoon": True, "limit": 100},
-            {"inStock": False, "isBuyable": True, "limit": 100},
-            {"status": "available_soon", "limit": 100},
+            {"availableSoon": True},
+            {"filter": {"availableSoon": True}},
+            {"isAvailableSoon": True},
+            {"inStock": False, "isBuyable": True},
         ]
 
-        for payload in strategies:
+        working_payload = None
+        for base_payload in strategies:
             try:
-                async with sess.post(
-                    f"{API_BASE}/v4/catalog/search",
-                    json=payload
-                ) as r:
+                probe = {**base_payload, "page": 1, "limit": 40}
+                async with sess.post(f"{API_BASE}/v4/catalog/search", json=probe) as r:
                     if r.status != 200:
                         continue
                     data  = await r.json(content_type=None)
                     items = data.get("models") or []
                     if not items:
-                        logger.info(f"Coming soon strategy {payload}: 0 items")
+                        logger.info(f"Coming soon strategy {base_payload}: 0 items")
                         continue
 
-                    # Log first item to understand structure
-                    first = items[0]
-                    first_offers = first.get("offers") or []
-                    logger.info(
-                        f"Coming soon strategy {payload}: {len(items)} items | "
-                        f"item_keys={list(first.keys())} | "
-                        f"isAvailableSoon={first.get('isAvailableSoon')} "
-                        f"availableSoon={first.get('availableSoon')} "
-                        f"status={first.get('status')}"
-                    )
-                    if first_offers:
-                        fo = first_offers[0]
-                        logger.info(
-                            f"  offer_keys={list(fo.keys())} | "
-                            f"quantity={fo.get('quantity')} isBuyable={fo.get('isBuyable')} "
-                            f"isAvailableSoon={fo.get('isAvailableSoon')}"
-                        )
-
+                    pagination  = data.get("pagination") or {}
+                    total_pages = pagination.get("pageCount") or 1
+                    total_count = pagination.get("totalCount") or len(items)
+                    logger.info(f"Coming soon strategy {base_payload}: {total_count} total, {total_pages} pages")
+                    working_payload = base_payload
+                    # Add first page results
                     normed = self._norm_models_list(items)
-                    found  = [p for p in normed if p.get("coming_soon")]
-                    if found:
-                        logger.info(f"Strategy {payload}: {len(found)} coming_soon items confirmed")
-                        results.extend(found)
-                        break
-                    else:
-                        # Even if not detected via quantity — mark all returned items
-                        # as coming_soon if strategy is specifically for that
-                        if "availableSoon" in str(payload) or "isAvailableSoon" in str(payload):
-                            for p in normed:
-                                p["coming_soon"] = True
-                                p["available"]   = False
-                            logger.info(f"Strategy {payload}: force-marked {len(normed)} items as coming_soon")
-                            results.extend(normed)
-                            break
+                    for p in normed:
+                        p["coming_soon"] = True
+                        p["available"]   = False
+                    results.extend(normed)
+
+                    # Fetch remaining pages concurrently
+                    if total_pages > 1:
+                        sem = asyncio.Semaphore(5)
+                        async def fetch_page(page_num):
+                            async with sem:
+                                await asyncio.sleep(0.2)
+                                payload = {**base_payload, "page": page_num, "limit": 40}
+                                async with sess.post(f"{API_BASE}/v4/catalog/search", json=payload) as rp:
+                                    if rp.status == 200:
+                                        d = await rp.json(content_type=None)
+                                        pg_items = d.get("models") or []
+                                        normed_pg = self._norm_models_list(pg_items)
+                                        for p in normed_pg:
+                                            p["coming_soon"] = True
+                                            p["available"]   = False
+                                        return normed_pg
+                                return []
+                        pages = await asyncio.gather(*[fetch_page(p) for p in range(2, total_pages + 1)])
+                        for pg in pages:
+                            results.extend(pg)
+                    break
 
             except Exception as e:
-                logger.debug(f"Coming soon strategy {payload} error: {e}")
+                logger.debug(f"Coming soon strategy {base_payload} error: {e}")
 
-        logger.info(f"scan_coming_soon_api total: {len(results)} items")
+        logger.info(f"scan_coming_soon_api total: {len(results)} items (strategy: {working_payload})")
         return results
 
     async def get_coming_soon(self, category_url: str) -> list:
