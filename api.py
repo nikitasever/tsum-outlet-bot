@@ -190,17 +190,10 @@ async def scan_all_categories():
             # Full catalog scan — picks up coming_soon via quantity=0 + isBuyable=True
             results, api_total = await scanner.scan_full_catalog()
             coming_in_catalog = 0
-            all_zero_buyable   = 0  # debug counter
             for p in results:
                 if p.get("coming_soon"):
                     coming_in_catalog += 1
-                # debug: count items where all qty=0 and isBuyable
-                sizes = p.get("sizes") or []
-                if sizes and all(s.get("qty") == 0 for s in sizes):
-                    all_zero_buyable += 1
                 _upsert_product(catalog, sold, p, now)
-
-            logger.info(f"Scan results: {len(results)} items, {coming_in_catalog} coming_soon, {all_zero_buyable} with all_qty=0")
 
             save_catalog(catalog)
             save_sold(sold[-5000:])
