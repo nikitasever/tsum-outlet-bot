@@ -185,162 +185,139 @@ class TsumOutletParser:
         yandex_key: str = "",
     ) -> list:
         """
-        Find historically sold products from search engine indexes.
-        Source 1: DuckDuckGo (no key needed)
-        Source 2: Yandex XML API (requires user+key from xml.yandex.ru)
-
-        Returns list of dicts: {url, slug, status: 'sold'|'available'|'unknown'}
+        Find historically sold products by:
+        1. Parsing outlet.tsum.ru sitemap.xml (most reliable, no IP blocks)
+        2. Falling back to Yandex XML API if sitemap unavailable
         """
         sess = await self._session_()
         found_urls = set()
 
-        # ── Source 1: DuckDuckGo ──────────────────────────────────────────────
-        ddg_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "text/html",
-            "Accept-Language": "ru",
-        }
-        logger.info("Search index: starting DuckDuckGo scan...")
-        for page_num in range(max_pages):
-            try:
-                params = f"q=site%3Aoutlet.tsum.ru%2Fproduct%2F&s={page_num * 20}"
-                async with sess.get(
-                    f"https://html.duckduckgo.com/html/?{params}",
-                    headers=ddg_headers,
-                    timeout=aiohttp.ClientTimeout(total=15),
-                ) as r:
-                    if r.status != 200:
-                        logger.info(f"DDG stopped at page {page_num}: status {r.status}")
-                        break
-                    html = await r.text()
-
-                soup     = BeautifulSoup(html, "html.parser")
-                page_urls = self._extract_product_urls(soup, html)
-                new_urls  = page_urls - found_urls - known_urls
-                found_urls |= page_urls
-                logger.info(f"DDG page {page_num+1}: {len(page_urls)} URLs, {len(new_urls)} new")
-
-                # DDG returns empty results page when exhausted
-                if not soup.select(".result__url"):
-                    break
-                await asyncio.sleep(2.5)
-
-            except Exception as e:
-                logger.error(f"DDG page {page_num} error: {e}")
-                break
-
-        logger.info(f"DDG total: {len(found_urls)} URLs found")
-
-        # ── Source 2: Yandex XML ──────────────────────────────────────────────
-        if yandex_user and yandex_key:
-            logger.info("Search index: starting Yandex XML scan...")
-            yandex_url = "https://yandex.ru/search/xml"
+        # ── Source 1: sitemap.xml ─────────────────────────────────────────────
+        logger.info("Search index: trying sitemap.xml...")
+        sitemap_urls = await self._fetch_sitemap(sess)
+        if sitemap_urls:
+            found_urls |= sitemap_urls
+            logger.info(f"Sitemap: found {len(sitemap_urls)} product URLs")
+        elif yandex_user and yandex_key:
+            logger.info("Sitemap empty — trying Yandex XML...")
             for page_num in range(max_pages):
                 try:
                     params = {
-                        "user":   yandex_user,
-                        "key":    yandex_key,
-                        "query":  "site:outlet.tsum.ru/product/",
-                        "page":   page_num,
+                        "user":    yandex_user,
+                        "key":     yandex_key,
+                        "query":   "site:outlet.tsum.ru/product/",
+                        "page":    page_num,
                         "groupby": "attr=d.mode=deep.groups-on-page=10.docs-in-group=1",
-                        "lr":     "213",  # Moscow
+                        "lr":      "213",
                     }
                     async with sess.get(
-                        yandex_url, params=params,
+                        "https://yandex.ru/search/xml", params=params,
                         timeout=aiohttp.ClientTimeout(total=15),
                     ) as r:
                         if r.status != 200:
                             logger.info(f"Yandex XML stopped at page {page_num}: status {r.status}")
                             break
                         xml_text = await r.text()
-
-                    # Parse XML response
-                    soup_xml  = BeautifulSoup(xml_text, "xml")
+                    soup_xml = BeautifulSoup(xml_text, "xml")
+                    if soup_xml.find("error"):
+                        logger.warning(f"Yandex XML error: {soup_xml.find('error').get_text()}")
+                        break
                     page_urls = set()
                     for url_tag in soup_xml.find_all("url"):
-                        url = url_tag.get_text(strip=True)
-                        if "outlet.tsum.ru/product/" in url:
-                            clean = url.rstrip("/")
-                            page_urls.add(clean)
-
-                    # Also check <error> tag
-                    error = soup_xml.find("error")
-                    if error:
-                        logger.warning(f"Yandex XML error: {error.get_text()}")
-                        break
-
-                    new_urls   = page_urls - found_urls - known_urls
+                        u = url_tag.get_text(strip=True)
+                        if "outlet.tsum.ru/product/" in u:
+                            page_urls.add(u.rstrip("/"))
                     found_urls |= page_urls
-                    logger.info(f"Yandex XML page {page_num+1}: {len(page_urls)} URLs, {len(new_urls)} new")
-
+                    logger.info(f"Yandex XML page {page_num+1}: {len(page_urls)} URLs")
                     if not page_urls:
                         break
                     await asyncio.sleep(1)
-
                 except Exception as e:
                     logger.error(f"Yandex XML page {page_num} error: {e}")
                     break
-
-            logger.info(f"After Yandex XML: {len(found_urls)} total URLs")
         else:
-            logger.info("Yandex XML skipped (no credentials)")
+            logger.info("No sitemap URLs and no Yandex credentials — skipping")
 
-        # ── Step 2: check which URLs no longer exist ──────────────────────────
+        # ── Step 2: check which URLs are no longer live ───────────────────────
         unknown_urls = list(found_urls - known_urls)
-        logger.info(f"Checking {len(unknown_urls)} URLs not in our catalog...")
-
+        logger.info(f"Checking {len(unknown_urls)} unknown URLs...")
         if not unknown_urls:
             return []
 
-        results = []
-        sem = asyncio.Semaphore(5)
-
+        sem = asyncio.Semaphore(10)
         async def check_url(url: str) -> dict:
             async with sem:
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.1)
                 slug = self._slug(url)
                 try:
-                    async with sess.get(
-                        url,
-                        headers={**HEADERS, "Accept": "text/html"},
-                        allow_redirects=True,
-                        timeout=aiohttp.ClientTimeout(total=10),
-                    ) as r:
-                        if r.status == 404:
-                            return {"url": url, "slug": slug, "status": "sold"}
-                        elif r.status == 200:
-                            return {"url": url, "slug": slug, "status": "available"}
-                        else:
-                            return {"url": url, "slug": slug, "status": "unknown", "http": r.status}
-                except Exception as e:
-                    logger.debug(f"Check URL {url}: {e}")
+                    async with sess.get(url, headers={**HEADERS, "Accept": "text/html"},
+                                        allow_redirects=True, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                        return {"url": url, "slug": slug, "status": "sold" if r.status == 404 else "available"}
+                except Exception:
                     return {"url": url, "slug": slug, "status": "unknown"}
 
-        checks = await asyncio.gather(*[check_url(u) for u in unknown_urls[:500]])
-        for item in checks:
-            if item["status"] == "sold":
-                results.append(item)
-
-        logger.info(f"Search index scan done: {len(results)} historically sold products")
+        checks = await asyncio.gather(*[check_url(u) for u in unknown_urls[:3000]])
+        results = [r for r in checks if r["status"] == "sold"]
+        logger.info(f"Search index scan done: {len(results)} historically sold")
         return results
 
-    def _extract_product_urls(self, soup: BeautifulSoup, raw_html: str) -> set:
-        """Extract all outlet.tsum.ru/product/* URLs from a parsed page."""
+    async def _fetch_sitemap(self, sess) -> set:
+        """Fetch product URLs from outlet.tsum.ru sitemap."""
         urls = set()
-        pattern = re.compile(r"outlet\.tsum\.ru/product/([a-zA-Z0-9_-]+)")
-
-        # From <a> tags
-        for link in soup.find_all("a", href=True):
-            href = link["href"]
-            m = re.search(r"(https?://outlet\.tsum\.ru/product/[^&\"'\s/]+)", href)
-            if m:
-                urls.add(m.group(1))
-
-        # From raw text (catches encoded URLs too)
-        for m in pattern.finditer(raw_html):
-            urls.add(f"https://outlet.tsum.ru/product/{m.group(1)}")
-
+        candidates = [
+            "https://outlet.tsum.ru/sitemap.xml",
+            "https://outlet.tsum.ru/sitemap_index.xml",
+            "https://outlet.tsum.ru/sitemap-products.xml",
+            "https://outlet.tsum.ru/sitemap/products.xml",
+        ]
+        for sitemap_url in candidates:
+            try:
+                async with sess.get(sitemap_url, headers={**HEADERS, "Accept": "text/xml,application/xml"},
+                                    timeout=aiohttp.ClientTimeout(total=20)) as r:
+                    if r.status != 200:
+                        logger.info(f"Sitemap {sitemap_url}: status {r.status}")
+                        continue
+                    text = await r.text()
+                soup = BeautifulSoup(text, "xml")
+                # Sitemap index — check sub-sitemaps
+                sub_locs = [s.find("loc").get_text(strip=True) for s in soup.find_all("sitemap") if s.find("loc")]
+                if sub_locs:
+                    logger.info(f"Sitemap index at {sitemap_url}: {len(sub_locs)} sub-sitemaps")
+                    for sub_url in sub_locs:
+                        if any(k in sub_url.lower() for k in ("product", "catalog", "item")):
+                            sub_urls = await self._fetch_single_sitemap(sess, sub_url)
+                            urls |= sub_urls
+                    if not urls:
+                        for sub_url in sub_locs[:15]:
+                            urls |= await self._fetch_single_sitemap(sess, sub_url)
+                    if urls:
+                        return urls
+                # Direct sitemap
+                page_urls = self._extract_sitemap_urls(soup)
+                if page_urls:
+                    logger.info(f"Sitemap {sitemap_url}: {len(page_urls)} product URLs")
+                    return page_urls
+            except Exception as e:
+                logger.debug(f"Sitemap {sitemap_url}: {e}")
         return urls
+
+    async def _fetch_single_sitemap(self, sess, url: str) -> set:
+        try:
+            async with sess.get(url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=20)) as r:
+                if r.status != 200:
+                    return set()
+                text = await r.text()
+            return self._extract_sitemap_urls(BeautifulSoup(text, "xml"))
+        except Exception:
+            return set()
+
+    def _extract_sitemap_urls(self, soup: BeautifulSoup) -> set:
+        return {
+            loc.get_text(strip=True).rstrip("/")
+            for loc in soup.find_all("loc")
+            if "outlet.tsum.ru/product/" in loc.get_text()
+        }
+
 
     async def scan_coming_soon_api(self) -> list:
         """
