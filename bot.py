@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import aiohttp
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import (
@@ -16,6 +17,10 @@ logging.basicConfig(
     handlers=[logging.FileHandler("bot.log"), logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
+
+# Администраторы — могут запускать /scan
+ADMIN_IDS = {6290052794, 977565377}
+API_URL   = "http://localhost:8080"
 
 parser  = TsumOutletParser()
 tracker = ProductTracker()
@@ -426,14 +431,59 @@ async def post_init(app):
     ])
 
 
+async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("⛔ Нет доступа")
+        return
+    msg = await update.message.reply_text("🔄 Запускаю сканирование каталога...")
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{API_URL}/api/admin/scan_now", timeout=aiohttp.ClientTimeout(total=10)) as r:
+                if r.status == 200:
+                    await msg.edit_text(
+                        "✅ Сканирование запущено!\n\n"
+                        "Займёт ~1 минуту. После завершения в логах появится:\n"
+                        "`Manual scan done`",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await msg.edit_text(f"❌ Ошибка API: {r.status}")
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {e}")
+
+
+async def scan_history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("⛔ Нет доступа")
+        return
+    msg = await update.message.reply_text("🔄 Запускаю поиск исторических продаж...")
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{API_URL}/api/admin/scan_history", timeout=aiohttp.ClientTimeout(total=10)) as r:
+                if r.status == 200:
+                    await msg.edit_text(
+                        "✅ Поиск запущен!\n\n"
+                        "Займёт несколько минут. Результат появится в вкладке *История*.",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await msg.edit_text(f"❌ Ошибка API: {r.status}")
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {e}")
+
+
 def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
-    app.add_handler(CommandHandler("start",   start))
-    app.add_handler(CommandHandler("help",    help_command))
-    app.add_handler(CommandHandler("search",  search))
-    app.add_handler(CommandHandler("track",   track))
-    app.add_handler(CommandHandler("untrack", untrack))
-    app.add_handler(CommandHandler("list",    list_tracked))
+    app.add_handler(CommandHandler("start",        start))
+    app.add_handler(CommandHandler("help",         help_command))
+    app.add_handler(CommandHandler("search",       search))
+    app.add_handler(CommandHandler("track",        track))
+    app.add_handler(CommandHandler("untrack",      untrack))
+    app.add_handler(CommandHandler("list",         list_tracked))
+    app.add_handler(CommandHandler("scan",         scan_command))
+    app.add_handler(CommandHandler("scan_history", scan_history_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_handler))
 
@@ -442,10 +492,6 @@ def main():
 
     logger.info("🤖 ЦУМ Аутлет бот запущен")
     app.run_polling(drop_pending_updates=True)
-
-
-if __name__ == "__main__":
-    main()
 
 
 if __name__ == "__main__":
