@@ -28,14 +28,21 @@ HIST_SOLD_FILE = os.path.join(DATA_DIR, "historical_sold.json")
 
 # ── Storage helpers ──────────────────────────────────────────────────────────
 
+_catalog_cache: dict = {}
+
 def load_catalog():
+    global _catalog_cache
+    if _catalog_cache:
+        return _catalog_cache
     if os.path.exists(CATALOG_FILE):
         with open(CATALOG_FILE) as f:
-            return json.load(f)
-    return {}
+            _catalog_cache = json.load(f)
+    return _catalog_cache
 
 
 def save_catalog(data):
+    global _catalog_cache
+    _catalog_cache = data
     with open(CATALOG_FILE, "w") as f:
         json.dump(data, f, ensure_ascii=False)
 
