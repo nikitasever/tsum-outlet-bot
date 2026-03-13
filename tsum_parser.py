@@ -321,71 +321,67 @@ class TsumOutletParser:
 
     async def scan_coming_soon_api(self) -> list:
         """
-        Fetch coming_soon items from TSUM API with full pagination.
-        Tries several filter strategies, uses the first that works.
+        Try to find coming_soon items via the product type/category endpoint.
+        TSUM likely has a separate category or filter for 'скоро в продаже'.
         """
-        sess = await self._session_()
+        sess    = await self._session_()
         results = []
 
-        # Try strategies in order — stop at first that returns items
-        strategies = [
-            {"availableSoon": True},
-            {"filter": {"availableSoon": True}},
-            {"isAvailableSoon": True},
-            {"inStock": False, "isBuyable": True},
+        # Try category-based endpoints that TSUM might use for coming_soon
+        endpoints = [
+            # Category slug approach
+            (f"{API_BASE}/v4/catalog/search", {"categorySlug": "available-soon", "limit": 40}),
+            (f"{API_BASE}/v4/catalog/search", {"categorySlug": "coming-soon", "limit": 40}),
+            (f"{API_BASE}/v4/catalog/search", {"categorySlug": "скоро-в-продаже", "limit": 40}),
+            # Type filter
+            (f"{API_BASE}/v4/catalog/search", {"type": "available_soon", "limit": 40}),
+            (f"{API_BASE}/v4/catalog/search", {"filter": {"type": "available_soon"}, "limit": 40}),
         ]
 
-        working_payload = None
-        for base_payload in strategies:
+        for url, payload in endpoints:
             try:
-                probe = {**base_payload, "page": 1, "limit": 40}
-                async with sess.post(f"{API_BASE}/v4/catalog/search", json=probe) as r:
+                async with sess.post(url, json=payload) as r:
                     if r.status != 200:
                         continue
                     data  = await r.json(content_type=None)
                     items = data.get("models") or []
                     if not items:
-                        logger.info(f"Coming soon strategy {base_payload}: 0 items")
                         continue
-
                     pagination  = data.get("pagination") or {}
-                    total_pages = pagination.get("pageCount") or 1
                     total_count = pagination.get("totalCount") or len(items)
-                    logger.info(f"Coming soon strategy {base_payload}: {total_count} total, {total_pages} pages")
-                    working_payload = base_payload
-                    # Add first page results
+                    total_pages = pagination.get("pageCount") or 1
+                    logger.info(f"Coming soon endpoint {payload}: {total_count} items, {total_pages} pages")
+
+                    # Fetch all pages
                     normed = self._norm_models_list(items)
                     for p in normed:
                         p["coming_soon"] = True
                         p["available"]   = False
                     results.extend(normed)
 
-                    # Fetch remaining pages concurrently
                     if total_pages > 1:
                         sem = asyncio.Semaphore(5)
-                        async def fetch_page(page_num):
+                        async def fetch_page(page_num, base_payload=payload):
                             async with sem:
                                 await asyncio.sleep(0.2)
-                                payload = {**base_payload, "page": page_num, "limit": 40}
-                                async with sess.post(f"{API_BASE}/v4/catalog/search", json=payload) as rp:
+                                pl = {**base_payload, "page": page_num}
+                                async with sess.post(url, json=pl) as rp:
                                     if rp.status == 200:
-                                        d = await rp.json(content_type=None)
-                                        pg_items = d.get("models") or []
-                                        normed_pg = self._norm_models_list(pg_items)
-                                        for p in normed_pg:
+                                        d  = await rp.json(content_type=None)
+                                        pg = self._norm_models_list(d.get("models") or [])
+                                        for p in pg:
                                             p["coming_soon"] = True
                                             p["available"]   = False
-                                        return normed_pg
+                                        return pg
                                 return []
                         pages = await asyncio.gather(*[fetch_page(p) for p in range(2, total_pages + 1)])
                         for pg in pages:
                             results.extend(pg)
                     break
-
             except Exception as e:
-                logger.debug(f"Coming soon strategy {base_payload} error: {e}")
+                logger.debug(f"Coming soon endpoint {payload}: {e}")
 
-        logger.info(f"scan_coming_soon_api total: {len(results)} items (strategy: {working_payload})")
+        logger.info(f"scan_coming_soon_api total: {len(results)} items")
         return results
 
     async def get_coming_soon(self, category_url: str) -> list:
@@ -645,7 +641,6 @@ class TsumOutletParser:
 
     def _norm_models_list(self, items: list) -> list:
         out = []
-        debug_tags_logged = False
         for item in items:
             brand      = item.get("brand") or {}
             brand_name = brand.get("title") or brand.get("name") if isinstance(brand, dict) else str(brand or "—")
@@ -664,6 +659,7 @@ class TsumOutletParser:
                 is_buyable = any(o.get("isBuyable", False) for o in offers)
 
                 available   = has_stock
+                # coming_soon only if truly no stock but still buyable (pre-order)
                 coming_soon = all_zero and is_buyable
 
                 for offer in offers:
@@ -675,27 +671,6 @@ class TsumOutletParser:
                     qty = int(offer.get("quantity", 0))
                     if size_label:
                         sizes.append({"size": size_label, "available": qty > 0, "qty": qty})
-
-            # Check tags for coming_soon marker
-            tags = item.get("tags") or []
-            tag_values = []
-            for t in tags:
-                if isinstance(t, dict):
-                    tag_values.append(t.get("code") or t.get("name") or t.get("value") or str(t))
-                else:
-                    tag_values.append(str(t))
-
-            if not debug_tags_logged and tag_values:
-                logger.info(f"[TAGS DEBUG] sample tags: {tag_values[:10]}")
-                debug_tags_logged = True
-
-            # Detect coming_soon via known tag codes
-            COMING_SOON_TAGS = {"available_soon", "availableSoon", "coming_soon", "comingSoon",
-                                "скоро_в_продаже", "ожидается", "preorder", "pre-order"}
-            if any(str(tv).lower() in COMING_SOON_TAGS or str(tv).lower() in
-                   {t.lower() for t in COMING_SOON_TAGS} for tv in tag_values):
-                coming_soon = True
-                available   = False
 
             slug      = item.get("slug") or str(item.get("id", ""))
             images    = item.get("images") or []
