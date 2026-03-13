@@ -670,62 +670,36 @@ class TsumOutletParser:
 
     def _norm_models_list(self, items: list) -> list:
         out = []
-        debug_logged = False
         for item in items:
-            # Log full structure of first item unconditionally
-            if not debug_logged:
-                offers_sample = (item.get("offers") or [{}])[0]
-                logger.info(f"[DEBUG] item keys: {list(item.keys())}")
-                logger.info(f"[DEBUG] offers count: {len(item.get('offers') or [])}")
-                logger.info(f"[DEBUG] offer[0] keys: {list(offers_sample.keys())}")
-                logger.info(f"[DEBUG] quantity={offers_sample.get('quantity')} isBuyable={offers_sample.get('isBuyable')} isAvailableSoon={offers_sample.get('isAvailableSoon')}")
-                logger.info(f"[DEBUG] item.availableSoon={item.get('availableSoon')} item.status={item.get('status')} item.isAvailableSoon={item.get('isAvailableSoon')}")
-                debug_logged = True
+            brand      = item.get("brand") or {}
+            brand_name = brand.get("title") or brand.get("name") if isinstance(brand, dict) else str(brand or "—")
+            offers     = item.get("offers") or []
+            price, old_price       = None, None
+            available, coming_soon = True, False
+            sizes                  = []
 
+            if offers:
                 p         = offers[0].get("price") or {}
                 price     = p.get("priceWithDiscount") or p.get("currentPrice")
                 old_price = p.get("originalPrice") or p.get("oldPrice")
 
-                has_qty = any("quantity" in o for o in offers)
+                # quantity + isBuyable confirmed present in API response
+                all_zero   = all(int(o.get("quantity", 0)) == 0 for o in offers)
+                has_stock  = any(int(o.get("quantity", 0)) > 0 for o in offers)
+                is_buyable = any(o.get("isBuyable", False) for o in offers)
 
-                if has_qty:
-                    # quantity is available — use it precisely
-                    has_stock   = any(int(o.get("quantity", 0)) > 0 for o in offers)
-                    all_zero    = all(int(o.get("quantity", 0)) == 0 for o in offers)
-                    is_buyable  = any(o.get("isBuyable", False) for o in offers)
-                    available   = has_stock
-                    coming_soon = all_zero and is_buyable
+                available   = has_stock
+                coming_soon = all_zero and is_buyable
 
-                    for offer in offers:
-                        size_info  = offer.get("size") or {}
-                        size_label = (
-                            size_info.get("russianSize") or size_info.get("vendorSize") or
-                            size_info.get("label") or str(size_info.get("id", ""))
-                        ) if isinstance(size_info, dict) else str(size_info)
-                        qty  = int(offer.get("quantity", 0))
-                        if size_label:
-                            sizes.append({"size": size_label, "available": qty > 0, "qty": qty})
-                else:
-                    # quantity not returned — use available/inStock flag if present
-                    for offer in offers:
-                        size_info  = offer.get("size") or {}
-                        size_label = (
-                            size_info.get("russianSize") or size_info.get("vendorSize") or
-                            size_info.get("label") or str(size_info.get("id", ""))
-                        ) if isinstance(size_info, dict) else str(size_info)
-                        avail = bool(offer.get("available", offer.get("inStock", True)))
-                        if size_label:
-                            sizes.append({"size": size_label, "available": avail, "qty": None})
-                    available = any(s["available"] for s in sizes) if sizes else True
-
-            # Item-level coming_soon flags (try regardless of offer-level)
-            if not coming_soon:
-                coming_soon = bool(
-                    item.get("isAvailableSoon") or
-                    item.get("availableSoon") or
-                    item.get("comingSoon") or
-                    str(item.get("status", "")).lower() in ("available_soon", "coming_soon", "comingsoon")
-                )
+                for offer in offers:
+                    size_info  = offer.get("size") or {}
+                    size_label = (
+                        size_info.get("russianSize") or size_info.get("vendorSize") or
+                        size_info.get("label") or str(size_info.get("id", ""))
+                    ) if isinstance(size_info, dict) else str(size_info)
+                    qty = int(offer.get("quantity", 0))
+                    if size_label:
+                        sizes.append({"size": size_label, "available": qty > 0, "qty": qty})
 
             slug      = item.get("slug") or str(item.get("id", ""))
             images    = item.get("images") or []
