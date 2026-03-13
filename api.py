@@ -6,7 +6,7 @@ import time
 from collections import Counter
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 
 from tsum_parser import TsumOutletParser, COMING_SOON_URLS
