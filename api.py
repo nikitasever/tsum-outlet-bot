@@ -187,13 +187,20 @@ async def scan_all_categories():
             sold = load_sold()
             now = int(time.time())
 
-            # Full catalog scan — picks up coming_soon via quantity=0 + isBuyable=true
+            # Full catalog scan — picks up coming_soon via quantity=0 + isBuyable=True
             results, api_total = await scanner.scan_full_catalog()
             coming_in_catalog = 0
+            all_zero_buyable   = 0  # debug counter
             for p in results:
-                _upsert_product(catalog, sold, p, now)
                 if p.get("coming_soon"):
                     coming_in_catalog += 1
+                # debug: count items where all qty=0 and isBuyable
+                sizes = p.get("sizes") or []
+                if sizes and all(s.get("qty") == 0 for s in sizes):
+                    all_zero_buyable += 1
+                _upsert_product(catalog, sold, p, now)
+
+            logger.info(f"Scan results: {len(results)} items, {coming_in_catalog} coming_soon, {all_zero_buyable} with all_qty=0")
 
             save_catalog(catalog)
             save_sold(sold[-5000:])
@@ -202,13 +209,7 @@ async def scan_all_categories():
                 f"DB: {len(catalog)}, coming_soon in catalog: {coming_in_catalog}"
             )
 
-            # Strategy 1: direct API coming_soon scan (tries different filters)
-            coming_api = await scanner.scan_coming_soon_api()
-            for p in coming_api:
-                _upsert_product(catalog, sold, p, now)
-            logger.info(f"Coming soon via API filter: {len(coming_api)} items")
-
-            # Strategy 2: HTML coming_soon scan (parallel across all category URLs)
+            # HTML coming_soon scan (category pages)
             async def scan_coming(url):
                 try:
                     return await scanner.get_coming_soon(url)
@@ -455,11 +456,6 @@ async def scan_all_categories_once():
                 coming_in_catalog += 1
         save_catalog(catalog)
         save_sold(sold[-5000:])
-        coming_api = await scanner.scan_coming_soon_api()
-        for p in coming_api:
-            _upsert_product(catalog, sold, p, now)
-        save_catalog(catalog)
-        save_sold(sold[-5000:])
         total_coming = len(get_coming_soon_cached())
         logger.info(f"Manual scan done in {round(time.time()-t_start,1)}s. coming_soon: {total_coming}")
     except Exception as e:
@@ -492,9 +488,9 @@ async def sold_today():
 
 
 @app.get("/api/coming_soon")
-async def coming_soon():
+async def coming_soon(limit: int = 500):
     items = get_coming_soon_cached()
-    return {"count": len(items), "items": items}
+    return {"count": len(items), "items": items[:limit]}
 
 
 @app.get("/api/hot")
