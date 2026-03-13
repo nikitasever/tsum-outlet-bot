@@ -645,6 +645,7 @@ class TsumOutletParser:
 
     def _norm_models_list(self, items: list) -> list:
         out = []
+        debug_tags_logged = False
         for item in items:
             brand      = item.get("brand") or {}
             brand_name = brand.get("title") or brand.get("name") if isinstance(brand, dict) else str(brand or "—")
@@ -658,7 +659,6 @@ class TsumOutletParser:
                 price     = p.get("priceWithDiscount") or p.get("currentPrice")
                 old_price = p.get("originalPrice") or p.get("oldPrice")
 
-                # quantity + isBuyable confirmed present in API response
                 all_zero   = all(int(o.get("quantity", 0)) == 0 for o in offers)
                 has_stock  = any(int(o.get("quantity", 0)) > 0 for o in offers)
                 is_buyable = any(o.get("isBuyable", False) for o in offers)
@@ -675,6 +675,27 @@ class TsumOutletParser:
                     qty = int(offer.get("quantity", 0))
                     if size_label:
                         sizes.append({"size": size_label, "available": qty > 0, "qty": qty})
+
+            # Check tags for coming_soon marker
+            tags = item.get("tags") or []
+            tag_values = []
+            for t in tags:
+                if isinstance(t, dict):
+                    tag_values.append(t.get("code") or t.get("name") or t.get("value") or str(t))
+                else:
+                    tag_values.append(str(t))
+
+            if not debug_tags_logged and tag_values:
+                logger.info(f"[TAGS DEBUG] sample tags: {tag_values[:10]}")
+                debug_tags_logged = True
+
+            # Detect coming_soon via known tag codes
+            COMING_SOON_TAGS = {"available_soon", "availableSoon", "coming_soon", "comingSoon",
+                                "скоро_в_продаже", "ожидается", "preorder", "pre-order"}
+            if any(str(tv).lower() in COMING_SOON_TAGS or str(tv).lower() in
+                   {t.lower() for t in COMING_SOON_TAGS} for tv in tag_values):
+                coming_soon = True
+                available   = False
 
             slug      = item.get("slug") or str(item.get("id", ""))
             images    = item.get("images") or []
