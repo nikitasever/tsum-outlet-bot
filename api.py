@@ -244,30 +244,38 @@ async def scan_search_history():
     Finds historically sold products via search engine indexing.
     """
     scanner = TsumOutletParser()
-    # Wait for first catalog scan to complete
-    await asyncio.sleep(5 * 60)
+    await asyncio.sleep(60)  # wait 1 min after start
     while True:
-        try:
-            from config import YANDEX_XML_USER, YANDEX_XML_KEY
-            catalog   = load_catalog()
-            known_urls = set(catalog.keys())
-            logger.info(f"Starting search index scan ({len(known_urls)} known URLs)...")
-            results = await scanner.scan_search_index(
-                known_urls,
-                max_pages=20,
-                yandex_user=YANDEX_XML_USER,
-                yandex_key=YANDEX_XML_KEY,
-            )
-            if results:
-                hist      = load_historical_sold()
-                existing  = {r["url"] for r in hist}
-                new_items = [r for r in results if r["url"] not in existing]
-                hist.extend(new_items)
-                save_historical_sold(hist[-5000:])
-                logger.info(f"Search index: added {len(new_items)} new historical sold items")
-        except Exception as e:
-            logger.error(f"Search index scan error: {e}")
-        await asyncio.sleep(24 * 60 * 60)  # run daily
+        await _run_search_history_scan(scanner)
+        await asyncio.sleep(24 * 60 * 60)
+
+
+async def _run_search_history_scan(scanner=None):
+    if scanner is None:
+        scanner = TsumOutletParser()
+    try:
+        from config import YANDEX_XML_USER, YANDEX_XML_KEY
+        catalog    = load_catalog()
+        known_urls = set(catalog.keys())
+        logger.info(f"Starting search index scan ({len(known_urls)} known URLs)...")
+        results = await scanner.scan_search_index(
+            known_urls,
+            max_pages=20,
+            yandex_user=YANDEX_XML_USER,
+            yandex_key=YANDEX_XML_KEY,
+        )
+        logger.info(f"Search index scan returned {len(results)} results")
+        if results:
+            hist      = load_historical_sold()
+            existing  = {r["url"] for r in hist}
+            new_items = [r for r in results if r["url"] not in existing]
+            hist.extend(new_items)
+            save_historical_sold(hist[-5000:])
+            logger.info(f"Search index: added {len(new_items)} new historical sold items (total: {len(hist)})")
+        return len(results)
+    except Exception as e:
+        logger.error(f"Search index scan error: {e}", exc_info=True)
+        return 0
 
 
 @asynccontextmanager
@@ -404,6 +412,13 @@ async def stats():
         "top_views":    [{"product": i["product"], "views":  views[i["product"]["url"]]}  for i in top_views],
         "top_clicks":   [{"product": i["product"], "clicks": clicks[i["product"]["url"]]} for i in top_clicks],
     }
+
+
+@app.post("/api/admin/scan_history")
+async def trigger_history_scan(background_tasks: BackgroundTasks):
+    """Manually trigger historical sold scan."""
+    background_tasks.add_task(_run_search_history_scan)
+    return {"status": "started", "message": "Search index scan started in background"}
 
 
 @app.get("/api/sold/history")
