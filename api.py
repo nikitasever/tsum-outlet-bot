@@ -29,6 +29,7 @@ HIST_SOLD_FILE = os.path.join(DATA_DIR, "historical_sold.json")
 # ── Storage helpers ──────────────────────────────────────────────────────────
 
 _catalog_cache: dict = {}
+_coming_soon_cache: list = []
 
 def load_catalog():
     global _catalog_cache
@@ -41,10 +42,20 @@ def load_catalog():
 
 
 def save_catalog(data):
-    global _catalog_cache
+    global _catalog_cache, _coming_soon_cache
     _catalog_cache = data
+    _coming_soon_cache = [v["product"] for v in data.values() if v["product"].get("coming_soon")]
     with open(CATALOG_FILE, "w") as f:
         json.dump(data, f, ensure_ascii=False)
+
+
+def get_coming_soon_cached() -> list:
+    global _coming_soon_cache, _catalog_cache
+    if _coming_soon_cache:
+        return _coming_soon_cache
+    catalog = load_catalog()
+    _coming_soon_cache = [v["product"] for v in catalog.values() if v["product"].get("coming_soon")]
+    return _coming_soon_cache
 
 
 def load_sold():
@@ -421,6 +432,40 @@ async def stats():
     }
 
 
+@app.post("/api/admin/scan_now")
+async def trigger_scan_now(background_tasks: BackgroundTasks):
+    """Manually trigger full catalog scan immediately."""
+    background_tasks.add_task(scan_all_categories_once)
+    return {"status": "started"}
+
+
+async def scan_all_categories_once():
+    """Run one catalog scan cycle (used by admin trigger)."""
+    scanner = TsumOutletParser()
+    try:
+        t_start = time.time()
+        catalog = load_catalog()
+        sold    = load_sold()
+        now     = int(time.time())
+        results, api_total = await scanner.scan_full_catalog()
+        coming_in_catalog = 0
+        for p in results:
+            _upsert_product(catalog, sold, p, now)
+            if p.get("coming_soon"):
+                coming_in_catalog += 1
+        save_catalog(catalog)
+        save_sold(sold[-5000:])
+        coming_api = await scanner.scan_coming_soon_api()
+        for p in coming_api:
+            _upsert_product(catalog, sold, p, now)
+        save_catalog(catalog)
+        save_sold(sold[-5000:])
+        total_coming = len(get_coming_soon_cached())
+        logger.info(f"Manual scan done in {round(time.time()-t_start,1)}s. coming_soon: {total_coming}")
+    except Exception as e:
+        logger.error(f"Manual scan error: {e}", exc_info=True)
+
+
 @app.post("/api/admin/scan_history")
 async def trigger_history_scan(background_tasks: BackgroundTasks):
     """Manually trigger historical sold scan."""
@@ -448,8 +493,7 @@ async def sold_today():
 
 @app.get("/api/coming_soon")
 async def coming_soon():
-    catalog = load_catalog()
-    items = [v["product"] for v in catalog.values() if v["product"].get("coming_soon")]
+    items = get_coming_soon_cached()
     return {"count": len(items), "items": items}
 
 
